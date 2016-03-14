@@ -37,11 +37,11 @@ import (
 	"strings"
 )
 
-var ddumped int
-
-var dfirst *obj.Prog
-
-var dpc *obj.Prog
+var (
+	ddumped bool
+	dfirst  *obj.Prog
+	dpc     *obj.Prog
+)
 
 // Is this node a memory operand?
 func Ismem(n *Node) bool {
@@ -79,7 +79,7 @@ func Samereg(a *Node, b *Node) bool {
 	return true
 }
 
-func Gbranch(as int, t *Type, likely int) *obj.Prog {
+func Gbranch(as obj.As, t *Type, likely int) *obj.Prog {
 	p := Prog(as)
 	p.To.Type = obj.TYPE_BRANCH
 	p.To.Val = nil
@@ -97,11 +97,11 @@ func Gbranch(as int, t *Type, likely int) *obj.Prog {
 	return p
 }
 
-func Prog(as int) *obj.Prog {
+func Prog(as obj.As) *obj.Prog {
 	var p *obj.Prog
 
-	if as == obj.ADATA || as == obj.AGLOBL {
-		if ddumped != 0 {
+	if as == obj.AGLOBL {
+		if ddumped {
 			Fatalf("already dumped data")
 		}
 		if dpc == nil {
@@ -119,13 +119,11 @@ func Prog(as int) *obj.Prog {
 		p.Link = Pc
 	}
 
-	if lineno == 0 {
-		if Debug['K'] != 0 {
-			Warn("prog: line 0")
-		}
+	if lineno == 0 && Debug['K'] != 0 {
+		Warn("prog: line 0")
 	}
 
-	p.As = int16(as)
+	p.As = as
 	p.Lineno = lineno
 	return p
 }
@@ -163,7 +161,7 @@ func Clearp(p *obj.Prog) {
 }
 
 func dumpdata() {
-	ddumped = 1
+	ddumped = true
 	if dfirst == nil {
 		return
 	}
@@ -322,7 +320,7 @@ func Naddr(a *obj.Addr, n *Node) {
 		a := a // copy to let escape into Ctxt.Dconv
 		Debug['h'] = 1
 		Dump("naddr", n)
-		Fatalf("naddr: bad %v %v", Oconv(int(n.Op), 0), Ctxt.Dconv(a))
+		Fatalf("naddr: bad %v %v", Oconv(n.Op, 0), Ctxt.Dconv(a))
 
 	case OREGISTER:
 		a.Type = obj.TYPE_REG
@@ -383,14 +381,8 @@ func Naddr(a *obj.Addr, n *Node) {
 		if s == nil {
 			s = Lookup(".noname")
 		}
-		if n.Name.Method {
-			if n.Type != nil {
-				if n.Type.Sym != nil {
-					if n.Type.Sym.Pkg != nil {
-						s = Pkglookup(s.Name, n.Type.Sym.Pkg)
-					}
-				}
-			}
+		if n.Name.Method && n.Type != nil && n.Type.Sym != nil && n.Type.Sym.Pkg != nil {
+			s = Pkglookup(s.Name, n.Type.Sym.Pkg)
 		}
 
 		a.Type = obj.TYPE_MEM
@@ -423,7 +415,7 @@ func Naddr(a *obj.Addr, n *Node) {
 		if n.Left.Type.Etype != TSTRUCT || n.Left.Type.Type.Sym != n.Right.Sym {
 			Debug['h'] = 1
 			Dump("naddr", n)
-			Fatalf("naddr: bad %v %v", Oconv(int(n.Op), 0), Ctxt.Dconv(a))
+			Fatalf("naddr: bad %v %v", Oconv(n.Op, 0), Ctxt.Dconv(a))
 		}
 		Naddr(a, n.Left)
 
@@ -466,7 +458,7 @@ func Naddr(a *obj.Addr, n *Node) {
 		}
 		if a.Type != obj.TYPE_MEM {
 			a := a // copy to let escape into Ctxt.Dconv
-			Fatalf("naddr: OADDR %v (from %v)", Ctxt.Dconv(a), Oconv(int(n.Left.Op), 0))
+			Fatalf("naddr: OADDR %v (from %v)", Ctxt.Dconv(a), Oconv(n.Left.Op, 0))
 		}
 		a.Type = obj.TYPE_ADDR
 
@@ -517,7 +509,6 @@ func Naddr(a *obj.Addr, n *Node) {
 			a.Width = int64(Widthint)
 		}
 	}
-	return
 }
 
 func newplist() *obj.Plist {
@@ -548,8 +539,7 @@ func nodarg(t *Type, fp int) *Node {
 		n = Nod(ONAME, nil, nil)
 		n.Sym = Lookup(".args")
 		n.Type = t
-		var savet Iter
-		first := Structfirst(&savet, &t)
+		first := t.Field(0)
 		if first == nil {
 			Fatalf("nodarg: bad struct")
 		}

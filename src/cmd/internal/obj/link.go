@@ -144,10 +144,10 @@ import "encoding/binary"
 //			scale = 1
 //
 type Addr struct {
-	Type   int16
 	Reg    int16
 	Index  int16
 	Scale  int16 // Sometimes holds a register.
+	Type   AddrType
 	Name   int8
 	Class  int8
 	Etype  uint8
@@ -166,6 +166,8 @@ type Addr struct {
 	Node interface{} // for use by compiler
 }
 
+type AddrType uint8
+
 const (
 	NAME_NONE = 0 + iota
 	NAME_EXTERN
@@ -178,11 +180,9 @@ const (
 )
 
 const (
-	TYPE_NONE = 0
-)
+	TYPE_NONE AddrType = 0
 
-const (
-	TYPE_BRANCH = 5 + iota
+	TYPE_BRANCH AddrType = 5 + iota
 	TYPE_TEXTSIZE
 	TYPE_MEM
 	TYPE_CONST
@@ -198,7 +198,7 @@ const (
 )
 
 // TODO(rsc): Describe prog.
-// TODO(rsc): Describe TEXT/GLOBL flag in from3, DATA width in from3.
+// TODO(rsc): Describe TEXT/GLOBL flag in from3
 type Prog struct {
 	Ctxt   *Link
 	Link   *Prog
@@ -212,7 +212,7 @@ type Prog struct {
 	Pc     int64
 	Lineno int32
 	Spadj  int32
-	As     int16
+	As     As // Assembler opcode.
 	Reg    int16
 	RegTo2 int16  // 2nd register output operand
 	Mark   uint16 // bitmask of arch-specific items
@@ -228,7 +228,7 @@ type Prog struct {
 }
 
 // From3Type returns From3.Type, or TYPE_NONE when From3 is nil.
-func (p *Prog) From3Type() int16 {
+func (p *Prog) From3Type() AddrType {
 	if p.From3 == nil {
 		return TYPE_NONE
 	}
@@ -254,19 +254,18 @@ type ProgInfo struct {
 	Regindex uint64   // registers used by addressing mode
 }
 
-// Prog.as opcodes.
-// These are the portable opcodes, common to all architectures.
-// Each architecture defines many more arch-specific opcodes,
-// with values starting at A_ARCHSPECIFIC.
-// Each architecture adds an offset to this so each machine has
-// distinct space for its instructions. The offset is a power of
-// two so it can be masked to return to origin zero.
-// See the definitions of ABase386 etc.
+// An As denotes an assembler opcode.
+// There are some portable opcodes, declared here in package obj,
+// that are common to all architectures.
+// However, the majority of opcodes are arch-specific
+// and are declared in their respective architecture's subpackage.
+type As int16
+
+// These are the portable opcodes.
 const (
-	AXXX = 0 + iota
+	AXXX As = iota
 	ACALL
 	ACHECKNIL
-	ADATA
 	ADUFFCOPY
 	ADUFFZERO
 	AEND
@@ -286,6 +285,24 @@ const (
 	A_ARCHSPECIFIC
 )
 
+// Each architecture is allotted a distinct subspace of opcode values
+// for declaring its arch-specific opcodes.
+// Within this subspace, the first arch-specific opcode should be
+// at offset A_ARCHSPECIFIC.
+//
+// Subspaces are aligned to a power of two so opcodes can be masked
+// with AMask and used as compact array indices.
+const (
+	ABase386 = (1 + iota) << 12
+	ABaseARM
+	ABaseAMD64
+	ABasePPC64
+	ABaseARM64
+	ABaseMIPS64
+
+	AMask = 1<<12 - 1 // AND with this to use the opcode as an array index.
+)
+
 // An LSym is the sort of symbol that is written to an object file.
 type LSym struct {
 	Name      string
@@ -297,6 +314,15 @@ type LSym struct {
 	Leaf      uint8
 	Seenglobl uint8
 	Onlist    uint8
+
+	// ReflectMethod means the function may call reflect.Type.Method or
+	// reflect.Type.MethodByName. Matching is imprecise (as reflect.Type
+	// can be used through a custom interface), so ReflectMethod may be
+	// set in some cases when the reflect package is not called.
+	//
+	// Used by the linker to determine what methods can be pruned.
+	ReflectMethod bool
+
 	// Local means make the symbol local even when compiling Go code to reference Go
 	// symbols in other shared libraries, as in this mode symbols are global by
 	// default. "local" here means in the sense of the dynamic linker, i.e. not
@@ -339,6 +365,7 @@ const (
 	STYPE
 	SSTRING
 	SGOSTRING
+	SGOSTRINGHDR
 	SGOFUNC
 	SGCBITS
 	SRODATA
@@ -357,6 +384,7 @@ const (
 	STYPERELRO
 	SSTRINGRELRO
 	SGOSTRINGRELRO
+	SGOSTRINGHDRRELRO
 	SGOFUNCRELRO
 	SGCBITSRELRO
 	SRODATARELRO
@@ -449,6 +477,11 @@ const (
 	// should be linked into the final binary, even if there are no other
 	// direct references. (This is used for types reachable by reflection.)
 	R_USETYPE
+	// R_METHOD resolves to an *rtype for a method.
+	// It is used when linking from the uncommonType of another *rtype, and
+	// may be set to zero by the linker if it determines the method text is
+	// unreachable by the linked program.
+	R_METHOD
 	R_POWER_TOC
 	R_GOTPCREL
 	// R_JMPMIPS (only used on mips64) resolves to non-PC-relative target address
@@ -568,55 +601,54 @@ const (
 // Link holds the context for writing object code from a compiler
 // to be linker input or for reading that input into the linker.
 type Link struct {
-	Goarm              int32
-	Headtype           int
-	Arch               *LinkArch
-	Debugasm           int32
-	Debugvlog          int32
-	Debugdivmod        int32
-	Debugpcln          int32
-	Flag_shared        int32
-	Flag_dynlink       bool
-	Flag_optimize      bool
-	Bso                *Biobuf
-	Pathname           string
-	Windows            int32
-	Goroot             string
-	Goroot_final       string
-	Enforce_data_order int32
-	Hash               map[SymVer]*LSym
-	LineHist           LineHist
-	Imports            []string
-	Plist              *Plist
-	Plast              *Plist
-	Sym_div            *LSym
-	Sym_divu           *LSym
-	Sym_mod            *LSym
-	Sym_modu           *LSym
-	Plan9privates      *LSym
-	Curp               *Prog
-	Printp             *Prog
-	Blitrl             *Prog
-	Elitrl             *Prog
-	Rexflag            int
-	Vexflag            int
-	Rep                int
-	Repn               int
-	Lock               int
-	Asmode             int
-	Andptr             []byte
-	And                [100]uint8
-	Instoffset         int64
-	Autosize           int32
-	Armsize            int32
-	Pc                 int64
-	DiagFunc           func(string, ...interface{})
-	Mode               int
-	Cursym             *LSym
-	Version            int
-	Textp              *LSym
-	Etextp             *LSym
-	Errors             int
+	Goarm         int32
+	Headtype      int
+	Arch          *LinkArch
+	Debugasm      int32
+	Debugvlog     int32
+	Debugdivmod   int32
+	Debugpcln     int32
+	Flag_shared   int32
+	Flag_dynlink  bool
+	Flag_optimize bool
+	Bso           *Biobuf
+	Pathname      string
+	Windows       int32
+	Goroot        string
+	Goroot_final  string
+	Hash          map[SymVer]*LSym
+	LineHist      LineHist
+	Imports       []string
+	Plist         *Plist
+	Plast         *Plist
+	Sym_div       *LSym
+	Sym_divu      *LSym
+	Sym_mod       *LSym
+	Sym_modu      *LSym
+	Plan9privates *LSym
+	Curp          *Prog
+	Printp        *Prog
+	Blitrl        *Prog
+	Elitrl        *Prog
+	Rexflag       int
+	Vexflag       int
+	Rep           int
+	Repn          int
+	Lock          int
+	Asmode        int
+	Andptr        []byte
+	And           [100]uint8
+	Instoffset    int64
+	Autosize      int32
+	Armsize       int32
+	Pc            int64
+	DiagFunc      func(string, ...interface{})
+	Mode          int
+	Cursym        *LSym
+	Version       int
+	Textp         *LSym
+	Etextp        *LSym
+	Errors        int
 
 	// state for writing objects
 	Text  *LSym
@@ -665,7 +697,7 @@ type LinkArch struct {
 	Assemble   func(*Link, *LSym)
 	Follow     func(*Link, *LSym)
 	Progedit   func(*Link, *Prog)
-	UnaryDst   map[int]bool // Instruction takes one operand, a destination.
+	UnaryDst   map[As]bool // Instruction takes one operand, a destination.
 	Minlc      int
 	Ptrsize    int
 	Regsize    int

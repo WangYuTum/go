@@ -219,18 +219,23 @@ func (p *Parser) asmData(word string, operands [][]lex.Token) {
 	}
 	p.dataAddr[name] = nameAddr.Offset + int64(scale)
 
-	prog := &obj.Prog{
-		Ctxt:   p.ctxt,
-		As:     obj.ADATA,
-		Lineno: p.histLineNum,
-		From:   nameAddr,
-		From3: &obj.Addr{
-			Offset: int64(scale),
-		},
-		To: valueAddr,
+	switch valueAddr.Type {
+	case obj.TYPE_CONST:
+		nameAddr.Sym.WriteInt(p.ctxt, nameAddr.Offset, int64(scale), valueAddr.Offset)
+	case obj.TYPE_FCONST:
+		switch scale {
+		case 4:
+			nameAddr.Sym.WriteFloat32(p.ctxt, nameAddr.Offset, float32(valueAddr.Val.(float64)))
+		case 8:
+			nameAddr.Sym.WriteFloat64(p.ctxt, nameAddr.Offset, valueAddr.Val.(float64))
+		default:
+			panic("bad float scale")
+		}
+	case obj.TYPE_SCONST:
+		nameAddr.Sym.WriteString(p.ctxt, nameAddr.Offset, int64(scale), valueAddr.Val.(string))
+	case obj.TYPE_ADDR:
+		nameAddr.Sym.WriteAddr(p.ctxt, nameAddr.Offset, int64(scale), valueAddr.Sym, valueAddr.Offset)
 	}
-
-	p.append(prog, "", false)
 }
 
 // asmGlobl assembles a GLOBL pseudo-op.
@@ -341,12 +346,12 @@ func (p *Parser) asmFuncData(word string, operands [][]lex.Token) {
 // JMP	R1
 // JMP	exit
 // JMP	3(PC)
-func (p *Parser) asmJump(op int, cond string, a []obj.Addr) {
+func (p *Parser) asmJump(op obj.As, cond string, a []obj.Addr) {
 	var target *obj.Addr
 	prog := &obj.Prog{
 		Ctxt:   p.ctxt,
 		Lineno: p.histLineNum,
-		As:     int16(op),
+		As:     op,
 	}
 	switch len(a) {
 	case 1:
@@ -455,12 +460,12 @@ func (p *Parser) branch(jmp, target *obj.Prog) {
 
 // asmInstruction assembles an instruction.
 // MOVW R9, (R10)
-func (p *Parser) asmInstruction(op int, cond string, a []obj.Addr) {
+func (p *Parser) asmInstruction(op obj.As, cond string, a []obj.Addr) {
 	// fmt.Printf("%s %+v\n", obj.Aconv(op), a)
 	prog := &obj.Prog{
 		Ctxt:   p.ctxt,
 		Lineno: p.histLineNum,
-		As:     int16(op),
+		As:     op,
 	}
 	switch len(a) {
 	case 0:
@@ -707,7 +712,7 @@ func (p *Parser) getConstantPseudo(pseudo string, addr *obj.Addr) int64 {
 }
 
 // getConstant checks that addr represents a plain constant and returns its value.
-func (p *Parser) getConstant(prog *obj.Prog, op int, addr *obj.Addr) int64 {
+func (p *Parser) getConstant(prog *obj.Prog, op obj.As, addr *obj.Addr) int64 {
 	if addr.Type != obj.TYPE_MEM || addr.Name != 0 || addr.Reg != 0 || addr.Index != 0 {
 		p.errorf("%s: expected integer constant; found %s", obj.Aconv(op), obj.Dconv(prog, addr))
 	}
@@ -715,7 +720,7 @@ func (p *Parser) getConstant(prog *obj.Prog, op int, addr *obj.Addr) int64 {
 }
 
 // getImmediate checks that addr represents an immediate constant and returns its value.
-func (p *Parser) getImmediate(prog *obj.Prog, op int, addr *obj.Addr) int64 {
+func (p *Parser) getImmediate(prog *obj.Prog, op obj.As, addr *obj.Addr) int64 {
 	if addr.Type != obj.TYPE_CONST || addr.Name != 0 || addr.Reg != 0 || addr.Index != 0 {
 		p.errorf("%s: expected immediate constant; found %s", obj.Aconv(op), obj.Dconv(prog, addr))
 	}
@@ -723,7 +728,7 @@ func (p *Parser) getImmediate(prog *obj.Prog, op int, addr *obj.Addr) int64 {
 }
 
 // getRegister checks that addr represents a register and returns its value.
-func (p *Parser) getRegister(prog *obj.Prog, op int, addr *obj.Addr) int16 {
+func (p *Parser) getRegister(prog *obj.Prog, op obj.As, addr *obj.Addr) int16 {
 	if addr.Type != obj.TYPE_REG || addr.Offset != 0 || addr.Name != 0 || addr.Index != 0 {
 		p.errorf("%s: expected register; found %s", obj.Aconv(op), obj.Dconv(prog, addr))
 	}

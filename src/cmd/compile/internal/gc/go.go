@@ -6,6 +6,7 @@ package gc
 
 import (
 	"bytes"
+	"cmd/compile/internal/ssa"
 	"cmd/internal/obj"
 )
 
@@ -68,7 +69,6 @@ type Pkg struct {
 
 type Sym struct {
 	Flags     SymFlags
-	Uniqgen   uint32
 	Link      *Sym
 	Importdef *Pkg   // where imported definition was found
 	Linkname  string // link name
@@ -77,82 +77,19 @@ type Sym struct {
 	Pkg        *Pkg
 	Name       string // variable name
 	Def        *Node  // definition: ONAME OTYPE OPACK or OLITERAL
-	Label      *Label // corresponding label (ephemeral)
 	Block      int32  // blocknumber to catch redeclaration
 	Lastlineno int32  // last declaration for diagnostic
-	Origpkg    *Pkg   // original package for . import
-	Lsym       *obj.LSym
-	Fsym       *Sym // funcsym
-}
 
-type Type struct {
-	Etype       EType
-	Nointerface bool
-	Noalg       bool
-	Chan        uint8
-	Trecur      uint8 // to detect loops
-	Printed     bool
-	Embedded    uint8 // TFIELD embedded type
-	Funarg      bool  // on TSTRUCT and TFIELD
-	Copyany     bool
-	Local       bool // created in this file
-	Deferwidth  bool
-	Broke       bool // broken type definition.
-	Isddd       bool // TFIELD is ... argument
-	Align       uint8
-	Haspointers uint8 // 0 unknown, 1 no, 2 yes
-
-	Nod    *Node // canonical OTYPE node
-	Orig   *Type // original type (type literal or predefined type)
-	Lineno int32
-
-	// TFUNC
-	Thistuple int
-	Outtuple  int
-	Intuple   int
-	Outnamed  bool
-
-	Method  *Type
-	Xmethod *Type
-
-	Sym    *Sym
-	Vargen int32 // unique name for OTYPE/ONAME
-
-	Nname  *Node
-	Argwid int64
-
-	// most nodes
-	Type  *Type // actual type for TFIELD, element type for TARRAY, TCHAN, TMAP, TPTRxx
-	Width int64 // offset in TFIELD, width in all others
-
-	// TFIELD
-	Down  *Type   // next struct field, also key type in TMAP
-	Outer *Type   // outer struct
-	Note  *string // literal string annotation
-
-	// TARRAY
-	Bound int64 // negative is slice
-
-	// TMAP
-	Bucket *Type // internal type representing a hash bucket
-	Hmap   *Type // internal type representing a Hmap (map header object)
-	Hiter  *Type // internal type representing hash iterator state
-	Map    *Type // link from the above 3 internal types back to the map type.
-
-	Maplineno   int32 // first use of TFORW as map key
-	Embedlineno int32 // first use of TFORW as embedded type
-
-	// for TFORW, where to copy the eventual value to
-	Copyto []*Node
-
-	Lastfn *Node // for usefield
+	Label   *Label // corresponding label (ephemeral)
+	Origpkg *Pkg   // original package for . import
+	Lsym    *obj.LSym
+	Fsym    *Sym // funcsym
 }
 
 type Label struct {
-	Sym  *Sym
-	Def  *Node
-	Use  []*Node
-	Link *Label
+	Sym *Sym
+	Def *Node
+	Use []*Node
 
 	// for use during gen
 	Gotopc   *obj.Prog // pointer to unresolved gotos
@@ -161,18 +98,6 @@ type Label struct {
 	Continpc *obj.Prog // pointer to code
 
 	Used bool
-}
-
-type InitEntry struct {
-	Xoffset int64 // struct, array only
-	Expr    *Node // bytes of run-time computed expressions
-}
-
-type InitPlan struct {
-	Lit  int64
-	Zero int64
-	Expr int64
-	E    []InitEntry
 }
 
 type SymFlags uint8
@@ -188,66 +113,6 @@ const (
 )
 
 var dclstack *Sym
-
-type Iter struct {
-	Done  int
-	Tfunc *Type
-	T     *Type
-}
-
-type EType uint8
-
-const (
-	Txxx = iota
-
-	TINT8
-	TUINT8
-	TINT16
-	TUINT16
-	TINT32
-	TUINT32
-	TINT64
-	TUINT64
-	TINT
-	TUINT
-	TUINTPTR
-
-	TCOMPLEX64
-	TCOMPLEX128
-
-	TFLOAT32
-	TFLOAT64
-
-	TBOOL
-
-	TPTR32
-	TPTR64
-
-	TFUNC
-	TARRAY
-	T_old_DARRAY // Doesn't seem to be used in existing code. Used now for Isddd export (see bexport.go). TODO(gri) rename.
-	TSTRUCT
-	TCHAN
-	TMAP
-	TINTER
-	TFORW
-	TFIELD
-	TANY
-	TSTRING
-	TUNSAFEPTR
-
-	// pseudo-types for literals
-	TIDEAL
-	TNIL
-	TBLANK
-
-	// pseudo-type for frame layout
-	TFUNCARGS
-	TCHANARGS
-	TINTERMETH
-
-	NTYPE
-)
 
 // Ctype describes the constant kind of an "ideal" (untyped) constant.
 type Ctype int8
@@ -315,27 +180,6 @@ type Sig struct {
 	offset int32
 }
 
-type Dlist struct {
-	field *Type
-}
-
-// argument passing to/from
-// smagic and umagic
-type Magic struct {
-	W   int // input for both - width
-	S   int // output for both - shift
-	Bad int // output for both - unexpected failure
-
-	// magic multiplier for signed literal divisors
-	Sd int64 // input - literal divisor
-	Sm int64 // output - multiplier
-
-	// magic multiplier for unsigned literal divisors
-	Ud uint64 // input - literal divisor
-	Um uint64 // output - multiplier
-	Ua int    // output - adder
-}
-
 // note this is the runtime representation
 // of the compilers arrays.
 //
@@ -362,8 +206,6 @@ var sizeof_Array int // runtime sizeof(Array)
 // 	uchar	nel[4];		// number of elements
 // } String;
 var sizeof_String int // runtime sizeof(String)
-
-var dotlist [10]Dlist // size is max depth of embeddeds
 
 // lexlineno is the line number _after_ the most recently read rune.
 // In particular, it's advanced (or rewound) as newlines are read (or unread).
@@ -407,10 +249,6 @@ var localpkg *Pkg // package being compiled
 
 var importpkg *Pkg // package being imported
 
-var structpkg *Pkg // package that declared struct, during import
-
-var builtinpkg *Pkg // fake package for builtins
-
 var gostringpkg *Pkg // fake pkg for Go strings
 
 var itabpkg *Pkg // fake pkg for itab cache
@@ -425,8 +263,6 @@ var typepkg *Pkg // fake package for runtime type info (headers)
 
 var typelinkpkg *Pkg // fake package for runtime type info (data)
 
-var weaktypepkg *Pkg // weak references to runtime type info
-
 var unsafepkg *Pkg // package unsafe
 
 var trackpkg *Pkg // fake package for field tracking
@@ -438,18 +274,6 @@ var myimportpath string
 var localimport string
 
 var asmhdr string
-
-var Types [NTYPE]*Type
-
-var idealstring *Type
-
-var idealbool *Type
-
-var bytetype *Type
-
-var runetype *Type
-
-var errortype *Type
 
 var Simtype [NTYPE]EType
 
@@ -489,7 +313,7 @@ var minfltval [NTYPE]*Mpflt
 
 var maxfltval [NTYPE]*Mpflt
 
-var xtop *NodeList
+var xtop []*Node
 
 var externdcl []*Node
 
@@ -507,7 +331,7 @@ var statuniqgen int // name generator for static temps
 
 var iota_ int32
 
-var lastconst *NodeList
+var lastconst []*Node
 
 var lasttype *Node
 
@@ -693,7 +517,7 @@ type Arch struct {
 	Excise       func(*Flow)
 	Expandchecks func(*obj.Prog)
 	Getg         func(*Node)
-	Gins         func(int, *Node, *Node) *obj.Prog
+	Gins         func(obj.As, *Node, *Node) *obj.Prog
 
 	// Ginscmp generates code comparing n1 to n2 and jumping away if op is satisfied.
 	// The returned prog should be Patch'ed with the jump target.
@@ -713,9 +537,9 @@ type Arch struct {
 	// corresponding to the desired value.
 	// The second argument is the destination.
 	// If not present, Ginsboolval will be emulated with jumps.
-	Ginsboolval func(int, *Node)
+	Ginsboolval func(obj.As, *Node)
 
-	Ginscon      func(int, int64, *Node)
+	Ginscon      func(obj.As, int64, *Node)
 	Ginsnop      func()
 	Gmove        func(*Node, *Node)
 	Igenindex    func(*Node, *Node, bool) *obj.Prog
@@ -727,17 +551,30 @@ type Arch struct {
 	Smallindir   func(*obj.Addr, *obj.Addr) bool
 	Stackaddr    func(*obj.Addr) bool
 	Blockcopy    func(*Node, *Node, int64, int64, int64)
-	Sudoaddable  func(int, *Node, *obj.Addr) bool
+	Sudoaddable  func(obj.As, *Node, *obj.Addr) bool
 	Sudoclean    func()
 	Excludedregs func() uint64
 	RtoB         func(int) uint64
 	FtoB         func(int) uint64
 	BtoR         func(uint64) int
 	BtoF         func(uint64) int
-	Optoas       func(Op, *Type) int
+	Optoas       func(Op, *Type) obj.As
 	Doregbits    func(int) uint64
 	Regnames     func(*int) []string
 	Use387       bool // should 8g use 387 FP instructions instead of sse2.
+
+	// SSARegToReg maps ssa register numbers to obj register numbers.
+	SSARegToReg []int16
+
+	// SSAMarkMoves marks any MOVXconst ops that need to avoid clobbering flags.
+	SSAMarkMoves func(*SSAGenState, *ssa.Block)
+
+	// SSAGenValue emits Prog(s) for the Value.
+	SSAGenValue func(*SSAGenState, *ssa.Value)
+
+	// SSAGenBlock emits end-of-block Progs. SSAGenValue should be called
+	// for all values in the block before SSAGenBlock.
+	SSAGenBlock func(s *SSAGenState, b, next *ssa.Block)
 }
 
 var pcloc int32

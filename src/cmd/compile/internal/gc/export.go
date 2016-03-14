@@ -5,6 +5,7 @@
 package gc
 
 import (
+	"bufio"
 	"bytes"
 	"cmd/internal/obj"
 	"fmt"
@@ -106,9 +107,9 @@ func dumppkg(p *Pkg) {
 }
 
 // Look for anything we need for the inline body
-func reexportdeplist(ll nodesOrNodeList) {
-	for it := nodeSeqIterate(ll); !it.Done(); it.Next() {
-		reexportdep(it.N())
+func reexportdeplist(ll Nodes) {
+	for _, n := range ll.Slice() {
+		reexportdep(n)
 	}
 }
 
@@ -296,7 +297,7 @@ func dumpexporttype(t *Type) {
 	}
 
 	var m []*Type
-	for f := t.Method; f != nil; f = f.Down {
+	for f, it := IterMethods(t); f != nil; f = it.Next() {
 		dumpexporttype(f)
 		m = append(m, f)
 	}
@@ -314,10 +315,10 @@ func dumpexporttype(t *Type) {
 			if Debug['l'] < 2 {
 				typecheckinl(f.Type.Nname)
 			}
-			exportf("\tfunc (%v) %v %v { %v }\n", Tconv(getthisx(f.Type).Type, obj.FmtSharp), Sconv(f.Sym, obj.FmtShort|obj.FmtByte|obj.FmtSharp), Tconv(f.Type, obj.FmtShort|obj.FmtSharp), Hconv(f.Type.Nname.Func.Inl, obj.FmtSharp))
+			exportf("\tfunc (%v) %v %v { %v }\n", Tconv(f.Type.Recv(), obj.FmtSharp), Sconv(f.Sym, obj.FmtShort|obj.FmtByte|obj.FmtSharp), Tconv(f.Type, obj.FmtShort|obj.FmtSharp), Hconv(f.Type.Nname.Func.Inl, obj.FmtSharp))
 			reexportdeplist(f.Type.Nname.Func.Inl)
 		} else {
-			exportf("\tfunc (%v) %v %v\n", Tconv(getthisx(f.Type).Type, obj.FmtSharp), Sconv(f.Sym, obj.FmtShort|obj.FmtByte|obj.FmtSharp), Tconv(f.Type, obj.FmtShort|obj.FmtSharp))
+			exportf("\tfunc (%v) %v %v\n", Tconv(f.Type.Recv(), obj.FmtSharp), Sconv(f.Sym, obj.FmtShort|obj.FmtByte|obj.FmtSharp), Tconv(f.Type, obj.FmtShort|obj.FmtSharp))
 		}
 	}
 }
@@ -338,7 +339,7 @@ func dumpsym(s *Sym) {
 
 	switch s.Def.Op {
 	default:
-		Yyerror("unexpected export symbol: %v %v", Oconv(int(s.Def.Op), 0), s)
+		Yyerror("unexpected export symbol: %v %v", Oconv(s.Def.Op, 0), s)
 
 	case OLITERAL:
 		dumpexportconst(s)
@@ -387,7 +388,7 @@ func dumpexport() {
 			pkgMap = make(map[string]*Pkg)
 			pkgs = nil
 			importpkg = mkpkg("")
-			Import(obj.Binitr(&copy)) // must not die
+			Import(bufio.NewReader(&copy)) // must not die
 			importpkg = nil
 			pkgs = savedPkgs
 			pkgMap = savedPkgMap
@@ -584,7 +585,7 @@ func dumpasmhdr() {
 				break
 			}
 			fmt.Fprintf(b, "#define %s__size %d\n", t.Sym.Name, int(t.Width))
-			for t = t.Type; t != nil; t = t.Down {
+			for t, it := IterFields(t); t != nil; t = it.Next() {
 				if !isblanksym(t.Sym) {
 					fmt.Fprintf(b, "#define %s_%s %d\n", n.Sym.Name, t.Sym.Name, int(t.Width))
 				}

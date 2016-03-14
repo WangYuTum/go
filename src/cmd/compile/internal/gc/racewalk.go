@@ -55,10 +55,10 @@ func instrument(fn *Node) {
 	}
 
 	if flag_race == 0 || !ispkgin(norace_inst_pkgs) {
-		instrumentlist(fn.Nbody.Slice(), nil)
+		instrumentlist(fn.Nbody, nil)
 
 		// nothing interesting for race detector in fn->enter
-		instrumentlist(fn.Func.Exit.Slice(), nil)
+		instrumentlist(fn.Func.Exit, nil)
 	}
 
 	if flag_race != 0 {
@@ -86,16 +86,15 @@ func instrument(fn *Node) {
 	}
 }
 
-func instrumentlist(l nodesOrNodeList, init nodesOrNodeListPtr) {
-	var instr *NodeList
-
-	for it := nodeSeqIterate(l); !it.Done(); it.Next() {
-		instr = nil
-		instrumentnode(it.P(), &instr, 0, 0)
+func instrumentlist(l Nodes, init *Nodes) {
+	s := l.Slice()
+	for i := range s {
+		var instr Nodes
+		instrumentnode(&s[i], &instr, 0, 0)
 		if init == nil {
-			appendNodeSeq(&it.N().Ninit, instr)
+			s[i].Ninit.AppendNodes(&instr)
 		} else {
-			appendNodeSeq(init, instr)
+			init.AppendNodes(&instr)
 		}
 	}
 }
@@ -103,7 +102,7 @@ func instrumentlist(l nodesOrNodeList, init nodesOrNodeListPtr) {
 // walkexpr and walkstmt combined
 // walks the tree and adds calls to the
 // instrumentation code to top-level (statement) nodes' init
-func instrumentnode(np **Node, init nodesOrNodeListPtr, wr int, skip int) {
+func instrumentnode(np **Node, init *Nodes, wr int, skip int) {
 	n := *np
 
 	if n == nil {
@@ -123,7 +122,7 @@ func instrumentnode(np **Node, init nodesOrNodeListPtr, wr int, skip int) {
 		// nil it out and handle it separately before putting it back.
 		l := n.Ninit
 
-		setNodeSeq(&n.Ninit, nil)
+		n.Ninit.Set(nil)
 		instrumentlist(l, nil)
 		instrumentnode(&n, &l, wr, skip) // recurse with nil n->ninit
 		appendinit(&n, l)
@@ -135,7 +134,7 @@ func instrumentnode(np **Node, init nodesOrNodeListPtr, wr int, skip int) {
 
 	switch n.Op {
 	default:
-		Fatalf("instrument: unknown node type %v", Oconv(int(n.Op), 0))
+		Fatalf("instrument: unknown node type %v", Oconv(n.Op, 0))
 
 	case OAS, OASWB, OAS2FUNC:
 		instrumentnode(&n.Left, init, 1, 0)
@@ -148,26 +147,29 @@ func instrumentnode(np **Node, init nodesOrNodeListPtr, wr int, skip int) {
 
 	case OBLOCK:
 		var out []*Node
-		for it := nodeSeqIterate(n.List); !it.Done(); it.Next() {
-			switch it.N().Op {
+		ls := n.List.Slice()
+		for i := 0; i < len(ls); i++ {
+			switch ls[i].Op {
 			case OCALLFUNC, OCALLMETH, OCALLINTER:
-				instrumentnode(it.P(), &it.N().Ninit, 0, 0)
-				out = append(out, it.N())
+				instrumentnode(&ls[i], &ls[i].Ninit, 0, 0)
+				out = append(out, ls[i])
 				// Scan past OAS nodes copying results off stack.
 				// Those must not be instrumented, because the
 				// instrumentation calls will smash the results.
 				// The assignments are to temporaries, so they cannot
 				// be involved in races and need not be instrumented.
-				for it.Len() > 1 && nodeSeqSecond(it.Seq()).Op == OAS && iscallret(nodeSeqSecond(it.Seq()).Right) {
-					it.Next()
-					out = append(out, it.N())
+				for i+1 < len(ls) && ls[i+1].Op == OAS && iscallret(ls[i+1].Right) {
+					i++
+					out = append(out, ls[i])
 				}
 			default:
-				instrumentnode(it.P(), &out, 0, 0)
-				out = append(out, it.N())
+				var outn Nodes
+				outn.Set(out)
+				instrumentnode(&ls[i], &outn, 0, 0)
+				out = append(outn.Slice(), ls[i])
 			}
 		}
-		setNodeSeq(&n.List, out)
+		n.List.Set(out)
 		goto ret
 
 	case ODEFER:
@@ -364,13 +366,13 @@ func instrumentnode(np **Node, init nodesOrNodeListPtr, wr int, skip int) {
 		OAS2RECV,
 		OAS2MAPR,
 		OASOP:
-		Yyerror("instrument: %v must be lowered by now", Oconv(int(n.Op), 0))
+		Yyerror("instrument: %v must be lowered by now", Oconv(n.Op, 0))
 
 		goto ret
 
 		// impossible nodes: only appear in backend.
 	case ORROTC, OEXTEND:
-		Yyerror("instrument: %v cannot exist now", Oconv(int(n.Op), 0))
+		Yyerror("instrument: %v cannot exist now", Oconv(n.Op, 0))
 		goto ret
 
 	case OGETG:
@@ -427,7 +429,7 @@ ret:
 	if n.Op != OBLOCK { // OBLOCK is handled above in a special way.
 		instrumentlist(n.List, init)
 	}
-	instrumentlist(n.Nbody.Slice(), nil)
+	instrumentlist(n.Nbody, nil)
 	instrumentlist(n.Rlist, nil)
 	*np = n
 }
@@ -460,7 +462,7 @@ func isartificial(n *Node) bool {
 	return false
 }
 
-func callinstr(np **Node, init nodesOrNodeListPtr, wr int, skip int) bool {
+func callinstr(np **Node, init *Nodes, wr int, skip int) bool {
 	n := *np
 
 	//print("callinstr for %+N [ %O ] etype=%E class=%d\n",
@@ -529,7 +531,7 @@ func callinstr(np **Node, init nodesOrNodeListPtr, wr int, skip int) bool {
 			f = mkcall(name, nil, init, uintptraddr(n))
 		}
 
-		appendNodeSeqNode(init, f)
+		init.Append(f)
 		return true
 	}
 
@@ -575,13 +577,13 @@ func uintptraddr(n *Node) *Node {
 	return r
 }
 
-func detachexpr(n *Node, init nodesOrNodeListPtr) *Node {
+func detachexpr(n *Node, init *Nodes) *Node {
 	addr := Nod(OADDR, n, nil)
 	l := temp(Ptrto(n.Type))
 	as := Nod(OAS, l, addr)
 	typecheck(&as, Etop)
 	walkexpr(&as, init)
-	appendNodeSeqNode(init, as)
+	init.Append(as)
 	ind := Nod(OIND, l, nil)
 	typecheck(&ind, Erv)
 	walkexpr(&ind, init)
@@ -594,9 +596,9 @@ func foreachnode(n *Node, f func(*Node, interface{}), c interface{}) {
 	}
 }
 
-func foreachlist(l nodesOrNodeList, f func(*Node, interface{}), c interface{}) {
-	for it := nodeSeqIterate(l); !it.Done(); it.Next() {
-		foreachnode(it.N(), f, c)
+func foreachlist(l Nodes, f func(*Node, interface{}), c interface{}) {
+	for _, n := range l.Slice() {
+		foreachnode(n, f, c)
 	}
 }
 
@@ -618,8 +620,8 @@ func hascallspred(n *Node, c interface{}) {
 
 // appendinit is like addinit in subr.go
 // but appends rather than prepends.
-func appendinit(np **Node, init nodesOrNodeList) {
-	if nodeSeqLen(init) == 0 {
+func appendinit(np **Node, init Nodes) {
+	if init.Len() == 0 {
 		return
 	}
 
@@ -635,6 +637,6 @@ func appendinit(np **Node, init nodesOrNodeList) {
 		*np = n
 	}
 
-	appendNodeSeq(&n.Ninit, init)
+	n.Ninit.AppendNodes(&init)
 	n.Ullman = UINF
 }

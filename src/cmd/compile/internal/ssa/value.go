@@ -38,8 +38,8 @@ type Value struct {
 	// Source line number
 	Line int32
 
-	// Storage for the first two args
-	argstorage [2]*Value
+	// Storage for the first three args
+	argstorage [3]*Value
 }
 
 // Examples:
@@ -97,7 +97,7 @@ func (v *Value) AuxInt2Int64() int64 {
 }
 
 func (v *Value) AuxFloat() float64 {
-	if opcodeTable[v.Op].auxType != auxFloat {
+	if opcodeTable[v.Op].auxType != auxFloat32 && opcodeTable[v.Op].auxType != auxFloat64 {
 		v.Fatalf("op %s doesn't have a float aux field", v.Op)
 	}
 	return math.Float64frombits(uint64(v.AuxInt))
@@ -128,7 +128,7 @@ func (v *Value) LongString() string {
 		s += fmt.Sprintf(" [%d]", v.AuxInt32())
 	case auxInt64:
 		s += fmt.Sprintf(" [%d]", v.AuxInt)
-	case auxFloat:
+	case auxFloat32, auxFloat64:
 		s += fmt.Sprintf(" [%g]", v.AuxFloat())
 	case auxString:
 		s += fmt.Sprintf(" {%s}", v.Aux)

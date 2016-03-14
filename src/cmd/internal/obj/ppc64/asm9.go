@@ -48,7 +48,7 @@ const (
 )
 
 type Optab struct {
-	as    int16
+	as    obj.As
 	a1    uint8
 	a2    uint8
 	a3    uint8
@@ -403,14 +403,9 @@ var optab = []Optab{
 	{obj.AXXX, C_NONE, C_NONE, C_NONE, C_NONE, 0, 4, 0},
 }
 
-type Oprang struct {
-	start []Optab
-	stop  []Optab
-}
+var oprange [ALAST & obj.AMask][]Optab
 
-var oprange [ALAST & obj.AMask]Oprang
-
-var xcmp [C_NCLASS][C_NCLASS]uint8
+var xcmp [C_NCLASS][C_NCLASS]bool
 
 func span9(ctxt *obj.Link, cursym *obj.LSym) {
 	p := cursym.Text
@@ -420,7 +415,7 @@ func span9(ctxt *obj.Link, cursym *obj.LSym) {
 	ctxt.Cursym = cursym
 	ctxt.Autosize = int32(p.To.Offset)
 
-	if oprange[AANDN&obj.AMask].start == nil {
+	if oprange[AANDN&obj.AMask] == nil {
 		buildop(ctxt)
 	}
 
@@ -636,7 +631,7 @@ func aclass(ctxt *obj.Link, a *obj.Addr) int {
 	case obj.TYPE_CONST,
 		obj.TYPE_ADDR:
 		switch a.Name {
-		case obj.TYPE_NONE:
+		case obj.NAME_NONE:
 			ctxt.Instoffset = a.Offset
 			if a.Reg != 0 {
 				if -BIG <= ctxt.Instoffset && ctxt.Instoffset <= BIG {
@@ -731,7 +726,7 @@ func prasm(p *obj.Prog) {
 func oplook(ctxt *obj.Link, p *obj.Prog) *Optab {
 	a1 := int(p.Optab)
 	if a1 != 0 {
-		return &optab[a1-1:][0]
+		return &optab[a1-1]
 	}
 	a1 = int(p.From.Class)
 	if a1 == 0 {
@@ -763,35 +758,24 @@ func oplook(ctxt *obj.Link, p *obj.Prog) *Optab {
 	}
 
 	//print("oplook %v %d %d %d %d\n", p, a1, a2, a3, a4);
-	r0 := p.As & obj.AMask
-
-	o := oprange[r0].start
-	if o == nil {
-		o = oprange[r0].stop /* just generate an error */
-	}
-	e := oprange[r0].stop
-	c1 := xcmp[a1][:]
-	c3 := xcmp[a3][:]
-	c4 := xcmp[a4][:]
-	for ; -cap(o) < -cap(e); o = o[1:] {
-		if int(o[0].a2) == a2 {
-			if c1[o[0].a1] != 0 {
-				if c3[o[0].a3] != 0 {
-					if c4[o[0].a4] != 0 {
-						p.Optab = uint16((-cap(o) + cap(optab)) + 1)
-						return &o[0]
-					}
-				}
-			}
+	ops := oprange[p.As&obj.AMask]
+	c1 := &xcmp[a1]
+	c3 := &xcmp[a3]
+	c4 := &xcmp[a4]
+	for i := range ops {
+		op := &ops[i]
+		if int(op.a2) == a2 && c1[op.a1] && c3[op.a3] && c4[op.a4] {
+			p.Optab = uint16(cap(optab) - cap(ops) + i + 1)
+			return op
 		}
 	}
 
-	ctxt.Diag("illegal combination %v %v %v %v %v", obj.Aconv(int(p.As)), DRconv(a1), DRconv(a2), DRconv(a3), DRconv(a4))
+	ctxt.Diag("illegal combination %v %v %v %v %v", obj.Aconv(p.As), DRconv(a1), DRconv(a2), DRconv(a3), DRconv(a4))
 	prasm(p)
-	if o == nil {
-		o = optab
+	if ops == nil {
+		ops = optab
 	}
-	return &o[0]
+	return &ops[0]
 }
 
 func cmp(a int, b int) bool {
@@ -906,7 +890,7 @@ func (x ocmp) Less(i, j int) bool {
 	}
 	return false
 }
-func opset(a, b0 int16) {
+func opset(a, b0 obj.As) {
 	oprange[a&obj.AMask] = oprange[b0]
 }
 
@@ -916,7 +900,7 @@ func buildop(ctxt *obj.Link) {
 	for i := 0; i < C_NCLASS; i++ {
 		for n = 0; n < C_NCLASS; n++ {
 			if cmp(n, i) {
-				xcmp[i][n] = 1
+				xcmp[i][n] = true
 			}
 		}
 	}
@@ -926,16 +910,16 @@ func buildop(ctxt *obj.Link) {
 	for i := 0; i < n; i++ {
 		r := optab[i].as
 		r0 := r & obj.AMask
-		oprange[r0].start = optab[i:]
+		start := i
 		for optab[i].as == r {
 			i++
 		}
-		oprange[r0].stop = optab[i:]
+		oprange[r0] = optab[start:i]
 		i--
 
 		switch r {
 		default:
-			ctxt.Diag("unknown op in build: %v", obj.Aconv(int(r)))
+			ctxt.Diag("unknown op in build: %v", obj.Aconv(r))
 			log.Fatalf("bad code")
 
 		case ADCBF: /* unary indexed: op (b+a); op (b) */
@@ -2543,7 +2527,7 @@ func regoff(ctxt *obj.Link, a *obj.Addr) int32 {
 	return int32(vregoff(ctxt, a))
 }
 
-func oprrr(ctxt *obj.Link, a int16) uint32 {
+func oprrr(ctxt *obj.Link, a obj.As) uint32 {
 	switch a {
 	case AADD:
 		return OPVCC(31, 266, 0, 0)
@@ -3042,11 +3026,11 @@ func oprrr(ctxt *obj.Link, a int16) uint32 {
 		return OPVCC(31, 316, 0, 1)
 	}
 
-	ctxt.Diag("bad r/r opcode %v", obj.Aconv(int(a)))
+	ctxt.Diag("bad r/r opcode %v", obj.Aconv(a))
 	return 0
 }
 
-func opirr(ctxt *obj.Link, a int16) uint32 {
+func opirr(ctxt *obj.Link, a obj.As) uint32 {
 	switch a {
 	case AADD:
 		return OPVCC(14, 0, 0, 0)
@@ -3164,14 +3148,14 @@ func opirr(ctxt *obj.Link, a int16) uint32 {
 		return OPVCC(27, 0, 0, 0) /* XORIU */
 	}
 
-	ctxt.Diag("bad opcode i/r %v", obj.Aconv(int(a)))
+	ctxt.Diag("bad opcode i/r %v", obj.Aconv(a))
 	return 0
 }
 
 /*
  * load o(a),d
  */
-func opload(ctxt *obj.Link, a int16) uint32 {
+func opload(ctxt *obj.Link, a obj.As) uint32 {
 	switch a {
 	case AMOVD:
 		return OPVCC(58, 0, 0, 0) /* ld */
@@ -3211,14 +3195,14 @@ func opload(ctxt *obj.Link, a int16) uint32 {
 		return OPVCC(46, 0, 0, 0) /* lmw */
 	}
 
-	ctxt.Diag("bad load opcode %v", obj.Aconv(int(a)))
+	ctxt.Diag("bad load opcode %v", obj.Aconv(a))
 	return 0
 }
 
 /*
  * indexed load a(b),d
  */
-func oploadx(ctxt *obj.Link, a int16) uint32 {
+func oploadx(ctxt *obj.Link, a obj.As) uint32 {
 	switch a {
 	case AMOVWZ:
 		return OPVCC(31, 23, 0, 0) /* lwzx */
@@ -3268,14 +3252,14 @@ func oploadx(ctxt *obj.Link, a int16) uint32 {
 		return OPVCC(31, 53, 0, 0) /* ldux */
 	}
 
-	ctxt.Diag("bad loadx opcode %v", obj.Aconv(int(a)))
+	ctxt.Diag("bad loadx opcode %v", obj.Aconv(a))
 	return 0
 }
 
 /*
  * store s,o(d)
  */
-func opstore(ctxt *obj.Link, a int16) uint32 {
+func opstore(ctxt *obj.Link, a obj.As) uint32 {
 	switch a {
 	case AMOVB, AMOVBZ:
 		return OPVCC(38, 0, 0, 0) /* stb */
@@ -3312,14 +3296,14 @@ func opstore(ctxt *obj.Link, a int16) uint32 {
 		return OPVCC(62, 0, 0, 1) /* stdu */
 	}
 
-	ctxt.Diag("unknown store opcode %v", obj.Aconv(int(a)))
+	ctxt.Diag("unknown store opcode %v", obj.Aconv(a))
 	return 0
 }
 
 /*
  * indexed store s,a(b)
  */
-func opstorex(ctxt *obj.Link, a int16) uint32 {
+func opstorex(ctxt *obj.Link, a obj.As) uint32 {
 	switch a {
 	case AMOVB, AMOVBZ:
 		return OPVCC(31, 215, 0, 0) /* stbx */
@@ -3364,6 +3348,6 @@ func opstorex(ctxt *obj.Link, a int16) uint32 {
 		return OPVCC(31, 181, 0, 0) /* stdux */
 	}
 
-	ctxt.Diag("unknown storex opcode %v", obj.Aconv(int(a)))
+	ctxt.Diag("unknown storex opcode %v", obj.Aconv(a))
 	return 0
 }

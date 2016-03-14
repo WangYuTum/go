@@ -104,6 +104,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -122,32 +123,25 @@ func FlushplistNoFree(ctxt *Link) {
 	flushplist(ctxt, false)
 }
 func flushplist(ctxt *Link, freeProgs bool) {
-	var flag int
-	var s *LSym
-	var p *Prog
-	var plink *Prog
-	var a *Auto
-
 	// Build list of symbols, and assign instructions to lists.
 	// Ignore ctxt->plist boundaries. There are no guarantees there,
 	// and the assemblers just use one big list.
-	var curtext *LSym
-	var text *LSym
-	var etext *LSym
+	var curtext, text, etext *LSym
 
 	for pl := ctxt.Plist; pl != nil; pl = pl.Link {
-		for p = pl.Firstpc; p != nil; p = plink {
+		var plink *Prog
+		for p := pl.Firstpc; p != nil; p = plink {
 			if ctxt.Debugasm != 0 && ctxt.Debugvlog != 0 {
 				fmt.Printf("obj: %v\n", p)
 			}
 			plink = p.Link
 			p.Link = nil
 
-			if p.As == AEND {
+			switch p.As {
+			case AEND:
 				continue
-			}
 
-			if p.As == ATYPE {
+			case ATYPE:
 				// Assume each TYPE instruction describes
 				// a different local variable or parameter,
 				// so no dedup.
@@ -162,7 +156,7 @@ func flushplist(ctxt *Link, freeProgs bool) {
 				if curtext == nil {
 					continue
 				}
-				a = new(Auto)
+				a := new(Auto)
 				a.Asym = p.From.Sym
 				a.Aoffset = int32(p.From.Offset)
 				a.Name = int16(p.From.Name)
@@ -170,10 +164,9 @@ func flushplist(ctxt *Link, freeProgs bool) {
 				a.Link = curtext.Autom
 				curtext.Autom = a
 				continue
-			}
 
-			if p.As == AGLOBL {
-				s = p.From.Sym
+			case AGLOBL:
+				s := p.From.Sym
 				tmp6 := s.Seenglobl
 				s.Seenglobl++
 				if tmp6 != 0 {
@@ -193,7 +186,7 @@ func flushplist(ctxt *Link, freeProgs bool) {
 				if s.Type == 0 || s.Type == SXREF {
 					s.Type = SBSS
 				}
-				flag = int(p.From3.Offset)
+				flag := int(p.From3.Offset)
 				if flag&DUPOK != 0 {
 					s.Dupok = 1
 				}
@@ -206,15 +199,9 @@ func flushplist(ctxt *Link, freeProgs bool) {
 				}
 				ctxt.Edata = s
 				continue
-			}
 
-			if p.As == ADATA {
-				savedata(ctxt, p.From.Sym, p, "<input>")
-				continue
-			}
-
-			if p.As == ATEXT {
-				s = p.From.Sym
+			case ATEXT:
+				s := p.From.Sym
 				if s == nil {
 					// func _() { }
 					curtext = nil
@@ -235,12 +222,15 @@ func flushplist(ctxt *Link, freeProgs bool) {
 					etext.Next = s
 				}
 				etext = s
-				flag = int(p.From3Offset())
+				flag := int(p.From3Offset())
 				if flag&DUPOK != 0 {
 					s.Dupok = 1
 				}
 				if flag&NOSPLIT != 0 {
 					s.Nosplit = 1
+				}
+				if flag&REFLECTMETHOD != 0 {
+					s.ReflectMethod = true
 				}
 				s.Next = nil
 				s.Type = STEXT
@@ -248,9 +238,8 @@ func flushplist(ctxt *Link, freeProgs bool) {
 				s.Etext = p
 				curtext = s
 				continue
-			}
 
-			if p.As == AFUNCDATA {
+			case AFUNCDATA:
 				// Rewrite reference to go_args_stackmap(SB) to the Go-provided declaration information.
 				if curtext == nil { // func _() {}
 					continue
@@ -261,32 +250,33 @@ func flushplist(ctxt *Link, freeProgs bool) {
 					}
 					p.To.Sym = Linklookup(ctxt, fmt.Sprintf("%s.args_stackmap", curtext.Name), int(curtext.Version))
 				}
+
 			}
 
 			if curtext == nil {
 				continue
 			}
-			s = curtext
+			s := curtext
 			s.Etext.Link = p
 			s.Etext = p
 		}
 	}
 
 	// Add reference to Go arguments for C or assembly functions without them.
-	var found int
 	for s := text; s != nil; s = s.Next {
 		if !strings.HasPrefix(s.Name, "\"\".") {
 			continue
 		}
-		found = 0
+		found := false
+		var p *Prog
 		for p = s.Text; p != nil; p = p.Link {
 			if p.As == AFUNCDATA && p.From.Type == TYPE_CONST && p.From.Offset == FUNCDATA_ArgsPointerMaps {
-				found = 1
+				found = true
 				break
 			}
 		}
 
-		if found == 0 {
+		if !found {
 			p = Appendp(ctxt, s.Text)
 			p.As = AFUNCDATA
 			p.From.Type = TYPE_CONST
@@ -414,11 +404,9 @@ func writesym(ctxt *Link, b *Biobuf, s *LSym) {
 			i += 16
 		}
 
-		var r *Reloc
-		var name string
-		for i := 0; i < len(s.R); i++ {
-			r = &s.R[i]
-			name = ""
+		sort.Sort(relocByOff(s.R)) // generate stable output
+		for _, r := range s.R {
+			name := ""
 			if r.Sym != nil {
 				name = r.Sym.Name
 			}
@@ -460,7 +448,11 @@ func writesym(ctxt *Link, b *Biobuf, s *LSym) {
 		wrint(b, int64(s.Args))
 		wrint(b, int64(s.Locals))
 		wrint(b, int64(s.Nosplit))
-		wrint(b, int64(s.Leaf)|int64(s.Cfunc)<<1)
+		flags := int64(s.Leaf) | int64(s.Cfunc)<<1
+		if s.ReflectMethod {
+			flags |= 1 << 2
+		}
+		wrint(b, flags)
 		n := 0
 		for a := s.Autom; a != nil; a = a.Link {
 			n++
@@ -555,3 +547,10 @@ func wrsym(b *Biobuf, s *LSym) {
 	wrstring(b, s.Name)
 	wrint(b, int64(s.Version))
 }
+
+// relocByOff sorts relocations by their offsets.
+type relocByOff []Reloc
+
+func (x relocByOff) Len() int           { return len(x) }
+func (x relocByOff) Less(i, j int) bool { return x[i].Off < x[j].Off }
+func (x relocByOff) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }

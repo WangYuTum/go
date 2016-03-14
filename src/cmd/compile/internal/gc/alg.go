@@ -59,28 +59,16 @@ func algtype1(t *Type, bad **Type) int {
 	}
 
 	switch t.Etype {
-	// will be defined later.
 	case TANY, TFORW:
+		// will be defined later.
 		*bad = t
-
 		return -1
 
-	case TINT8,
-		TUINT8,
-		TINT16,
-		TUINT16,
-		TINT32,
-		TUINT32,
-		TINT64,
-		TUINT64,
-		TINT,
-		TUINT,
-		TUINTPTR,
-		TBOOL,
-		TPTR32,
-		TPTR64,
-		TCHAN,
-		TUNSAFEPTR:
+	case TINT8, TUINT8, TINT16, TUINT16,
+		TINT32, TUINT32, TINT64, TUINT64,
+		TINT, TUINT, TUINTPTR,
+		TBOOL, TPTR32, TPTR64,
+		TCHAN, TUNSAFEPTR:
 		return AMEM
 
 	case TFUNC, TMAP:
@@ -119,11 +107,14 @@ func algtype1(t *Type, bad **Type) int {
 		}
 
 		a := algtype1(t.Type, bad)
-		if a == ANOEQ || a == AMEM {
-			if a == ANOEQ && bad != nil {
+		switch a {
+		case AMEM:
+			return AMEM
+		case ANOEQ:
+			if bad != nil {
 				*bad = t
 			}
-			return a
+			return ANOEQ
 		}
 
 		switch t.Bound {
@@ -138,26 +129,25 @@ func algtype1(t *Type, bad **Type) int {
 		return -1 // needs special compare
 
 	case TSTRUCT:
-		if t.Type != nil && t.Type.Down == nil && !isblanksym(t.Type.Sym) {
-			// One-field struct is same as that one field alone.
-			return algtype1(t.Type.Type, bad)
+		fields := t.FieldSlice()
+
+		// One-field struct is same as that one field alone.
+		if len(fields) == 1 && !isblanksym(fields[0].Sym) {
+			return algtype1(fields[0].Type, bad)
 		}
 
 		ret := AMEM
-		var a int
-		for t1 := t.Type; t1 != nil; t1 = t1.Down {
+		for i, f := range fields {
 			// All fields must be comparable.
-			a = algtype1(t1.Type, bad)
-
+			a := algtype1(f.Type, bad)
 			if a == ANOEQ {
 				return ANOEQ
 			}
 
 			// Blank fields, padded fields, fields with non-memory
 			// equality need special compare.
-			if a != AMEM || isblanksym(t1.Sym) || ispaddedfield(t1, t.Width) {
+			if a != AMEM || isblanksym(f.Sym) || ispaddedfield(t, fields, i) {
 				ret = -1
-				continue
 			}
 		}
 
@@ -187,13 +177,13 @@ func genhash(sym *Sym, t *Type) {
 	fn.Func.Nname.Name.Param.Ntype = tfn
 
 	n := Nod(ODCLFIELD, newname(Lookup("p")), typenod(Ptrto(t)))
-	tfn.List = list(tfn.List, n)
+	tfn.List.Append(n)
 	np := n.Left
 	n = Nod(ODCLFIELD, newname(Lookup("h")), typenod(Types[TUINTPTR]))
-	tfn.List = list(tfn.List, n)
+	tfn.List.Append(n)
 	nh := n.Left
 	n = Nod(ODCLFIELD, nil, typenod(Types[TUINTPTR])) // return value
-	tfn.Rlist = list(tfn.Rlist, n)
+	tfn.Rlist.Append(n)
 
 	funchdr(fn)
 	typecheck(&fn.Func.Nname.Name.Param.Ntype, Etype)
@@ -218,10 +208,10 @@ func genhash(sym *Sym, t *Type) {
 		n := Nod(ORANGE, nil, Nod(OIND, np, nil))
 		ni := newname(Lookup("i"))
 		ni.Type = Types[TINT]
-		n.List = list1(ni)
+		n.List.Set1(ni)
 		n.Colas = true
 		colasdefn(n.List, n)
-		ni = n.List.N
+		ni = n.List.First()
 
 		// h = hashel(&p[i], h)
 		call := Nod(OCALL, hashel, nil)
@@ -230,69 +220,58 @@ func genhash(sym *Sym, t *Type) {
 		nx.Bounded = true
 		na := Nod(OADDR, nx, nil)
 		na.Etype = 1 // no escape to heap
-		call.List = list(call.List, na)
-		call.List = list(call.List, nh)
+		call.List.Append(na)
+		call.List.Append(nh)
 		n.Nbody.Append(Nod(OAS, nh, call))
 
 		fn.Nbody.Append(n)
 
-	// Walk the struct using memhash for runs of AMEM
-	// and calling specific hash functions for the others.
 	case TSTRUCT:
-		var call *Node
-		var nx *Node
-		var na *Node
-		var hashel *Node
+		// Walk the struct using memhash for runs of AMEM
+		// and calling specific hash functions for the others.
+		for i, fields := 0, t.FieldSlice(); i < len(fields); {
+			f := fields[i]
 
-		t1 := t.Type
-		for {
-			first, size, next := memrun(t, t1)
-			t1 = next
+			// Skip blank fields.
+			if isblanksym(f.Sym) {
+				i++
+				continue
+			}
 
-			// Run memhash for fields up to this one.
-			if first != nil {
-				hashel = hashmem(first.Type)
-
-				// h = hashel(&p.first, size, h)
-				call = Nod(OCALL, hashel, nil)
-
-				nx = Nod(OXDOT, np, newname(first.Sym)) // TODO: fields from other packages?
-				na = Nod(OADDR, nx, nil)
+			// Hash non-memory fields with appropriate hash function.
+			if algtype1(f.Type, nil) != AMEM {
+				hashel := hashfor(f.Type)
+				call := Nod(OCALL, hashel, nil)
+				nx := Nod(OXDOT, np, newname(f.Sym)) // TODO: fields from other packages?
+				na := Nod(OADDR, nx, nil)
 				na.Etype = 1 // no escape to heap
-				call.List = list(call.List, na)
-				call.List = list(call.List, nh)
-				call.List = list(call.List, Nodintconst(size))
+				call.List.Append(na)
+				call.List.Append(nh)
 				fn.Nbody.Append(Nod(OAS, nh, call))
-			}
-
-			if t1 == nil {
-				break
-			}
-			if isblanksym(t1.Sym) {
-				t1 = t1.Down
-				continue
-			}
-			if algtype1(t1.Type, nil) == AMEM {
-				// Our memory run might have been stopped by padding or a blank field.
-				// If the next field is memory-ish, it could be the start of a new run.
+				i++
 				continue
 			}
 
-			hashel = hashfor(t1.Type)
-			call = Nod(OCALL, hashel, nil)
-			nx = Nod(OXDOT, np, newname(t1.Sym)) // TODO: fields from other packages?
-			na = Nod(OADDR, nx, nil)
+			// Otherwise, hash a maximal length run of raw memory.
+			size, next := memrun(t, fields, i)
+
+			// h = hashel(&p.first, size, h)
+			hashel := hashmem(f.Type)
+			call := Nod(OCALL, hashel, nil)
+			nx := Nod(OXDOT, np, newname(f.Sym)) // TODO: fields from other packages?
+			na := Nod(OADDR, nx, nil)
 			na.Etype = 1 // no escape to heap
-			call.List = list(call.List, na)
-			call.List = list(call.List, nh)
+			call.List.Append(na)
+			call.List.Append(nh)
+			call.List.Append(Nodintconst(size))
 			fn.Nbody.Append(Nod(OAS, nh, call))
 
-			t1 = t1.Down
+			i = next
 		}
 	}
 
 	r := Nod(ORETURN, nil, nil)
-	r.List = list(r.List, nh)
+	r.List.Append(nh)
 	fn.Nbody.Append(r)
 
 	if Debug['r'] != 0 {
@@ -303,8 +282,10 @@ func genhash(sym *Sym, t *Type) {
 	Curfn = fn
 	fn.Func.Dupok = true
 	typecheck(&fn, Etop)
-	typechecklist(fn.Nbody, Etop)
+	typechecklist(fn.Nbody.Slice(), Etop)
 	Curfn = nil
+	popdcl()
+	testdclstack()
 
 	// Disable safemode while compiling this code: the code we
 	// generate internally can refer to unsafe.Pointer.
@@ -314,39 +295,32 @@ func genhash(sym *Sym, t *Type) {
 	old_safemode := safemode
 
 	safemode = 0
+	Disable_checknil++
 	funccompile(fn)
+	Disable_checknil--
 	safemode = old_safemode
 }
 
 func hashfor(t *Type) *Node {
 	var sym *Sym
 
-	a := algtype1(t, nil)
-	switch a {
+	switch algtype1(t, nil) {
 	case AMEM:
 		Fatalf("hashfor with AMEM type")
-
 	case AINTER:
 		sym = Pkglookup("interhash", Runtimepkg)
-
 	case ANILINTER:
 		sym = Pkglookup("nilinterhash", Runtimepkg)
-
 	case ASTRING:
 		sym = Pkglookup("strhash", Runtimepkg)
-
 	case AFLOAT32:
 		sym = Pkglookup("f32hash", Runtimepkg)
-
 	case AFLOAT64:
 		sym = Pkglookup("f64hash", Runtimepkg)
-
 	case ACPLX64:
 		sym = Pkglookup("c64hash", Runtimepkg)
-
 	case ACPLX128:
 		sym = Pkglookup("c128hash", Runtimepkg)
-
 	default:
 		sym = typesymprefix(".hash", t)
 	}
@@ -354,9 +328,9 @@ func hashfor(t *Type) *Node {
 	n := newname(sym)
 	n.Class = PFUNC
 	tfn := Nod(OTFUNC, nil, nil)
-	tfn.List = list(tfn.List, Nod(ODCLFIELD, nil, typenod(Ptrto(t))))
-	tfn.List = list(tfn.List, Nod(ODCLFIELD, nil, typenod(Types[TUINTPTR])))
-	tfn.Rlist = list(tfn.Rlist, Nod(ODCLFIELD, nil, typenod(Types[TUINTPTR])))
+	tfn.List.Append(Nod(ODCLFIELD, nil, typenod(Ptrto(t))))
+	tfn.List.Append(Nod(ODCLFIELD, nil, typenod(Types[TUINTPTR])))
+	tfn.Rlist.Append(Nod(ODCLFIELD, nil, typenod(Types[TUINTPTR])))
 	typecheck(&tfn, Etype)
 	n.Type = tfn.Type
 	return n
@@ -382,15 +356,16 @@ func geneq(sym *Sym, t *Type) {
 	fn.Func.Nname.Name.Param.Ntype = tfn
 
 	n := Nod(ODCLFIELD, newname(Lookup("p")), typenod(Ptrto(t)))
-	tfn.List = list(tfn.List, n)
+	tfn.List.Append(n)
 	np := n.Left
 	n = Nod(ODCLFIELD, newname(Lookup("q")), typenod(Ptrto(t)))
-	tfn.List = list(tfn.List, n)
+	tfn.List.Append(n)
 	nq := n.Left
 	n = Nod(ODCLFIELD, nil, typenod(Types[TBOOL]))
-	tfn.Rlist = list(tfn.Rlist, n)
+	tfn.Rlist.Append(n)
 
 	funchdr(fn)
+	typecheck(&fn.Func.Nname.Name.Param.Ntype, Etype)
 
 	// geneq is only called for types that have equality but
 	// cannot be handled by the standard algorithms,
@@ -413,10 +388,10 @@ func geneq(sym *Sym, t *Type) {
 
 		ni := newname(Lookup("i"))
 		ni.Type = Types[TINT]
-		nrange.List = list1(ni)
+		nrange.List.Set1(ni)
 		nrange.Colas = true
 		colasdefn(nrange.List, nrange)
-		ni = nrange.List.N
+		ni = nrange.List.First()
 
 		// if p[i] != q[i] { return false }
 		nx := Nod(OINDEX, np, ni)
@@ -428,78 +403,67 @@ func geneq(sym *Sym, t *Type) {
 		nif := Nod(OIF, nil, nil)
 		nif.Left = Nod(ONE, nx, ny)
 		r := Nod(ORETURN, nil, nil)
-		r.List = list(r.List, Nodbool(false))
+		r.List.Append(Nodbool(false))
 		nif.Nbody.Append(r)
 		nrange.Nbody.Append(nif)
 		fn.Nbody.Append(nrange)
 
 		// return true
 		ret := Nod(ORETURN, nil, nil)
-		ret.List = list(ret.List, Nodbool(true))
+		ret.List.Append(Nodbool(true))
 		fn.Nbody.Append(ret)
 
-	// Walk the struct using memequal for runs of AMEM
-	// and calling specific equality tests for the others.
-	// Skip blank-named fields.
 	case TSTRUCT:
-		var conjuncts []*Node
-
-		t1 := t.Type
-		for {
-			first, size, next := memrun(t, t1)
-			t1 = next
-
-			// Run memequal for fields up to this one.
-			// TODO(rsc): All the calls to newname are wrong for
-			// cross-package unexported fields.
-			if first != nil {
-				if first.Down == t1 {
-					conjuncts = append(conjuncts, eqfield(np, nq, newname(first.Sym)))
-				} else if first.Down.Down == t1 {
-					conjuncts = append(conjuncts, eqfield(np, nq, newname(first.Sym)))
-					first = first.Down
-					if !isblanksym(first.Sym) {
-						conjuncts = append(conjuncts, eqfield(np, nq, newname(first.Sym)))
-					}
-				} else {
-					// More than two fields: use memequal.
-					conjuncts = append(conjuncts, eqmem(np, nq, newname(first.Sym), size))
-				}
+		var cond *Node
+		and := func(n *Node) {
+			if cond == nil {
+				cond = n
+				return
 			}
-
-			if t1 == nil {
-				break
-			}
-			if isblanksym(t1.Sym) {
-				t1 = t1.Down
-				continue
-			}
-			if algtype1(t1.Type, nil) == AMEM {
-				// Our memory run might have been stopped by padding or a blank field.
-				// If the next field is memory-ish, it could be the start of a new run.
-				continue
-			}
-
-			// Check this field, which is not just memory.
-			conjuncts = append(conjuncts, eqfield(np, nq, newname(t1.Sym)))
-			t1 = t1.Down
+			cond = Nod(OANDAND, cond, n)
 		}
 
-		var and *Node
-		switch len(conjuncts) {
-		case 0:
-			and = Nodbool(true)
-		case 1:
-			and = conjuncts[0]
-		default:
-			and = Nod(OANDAND, conjuncts[0], conjuncts[1])
-			for _, conjunct := range conjuncts[2:] {
-				and = Nod(OANDAND, and, conjunct)
+		// Walk the struct using memequal for runs of AMEM
+		// and calling specific equality tests for the others.
+		for i, fields := 0, t.FieldSlice(); i < len(fields); {
+			f := fields[i]
+
+			// Skip blank-named fields.
+			if isblanksym(f.Sym) {
+				i++
+				continue
 			}
+
+			// Compare non-memory fields with field equality.
+			if algtype1(f.Type, nil) != AMEM {
+				and(eqfield(np, nq, newname(f.Sym)))
+				i++
+				continue
+			}
+
+			// Find maximal length run of memory-only fields.
+			size, next := memrun(t, fields, i)
+
+			// TODO(rsc): All the calls to newname are wrong for
+			// cross-package unexported fields.
+			if s := fields[i:next]; len(s) <= 2 {
+				// Two or fewer fields: use plain field equality.
+				for _, f := range s {
+					and(eqfield(np, nq, newname(f.Sym)))
+				}
+			} else {
+				// More than two fields: use memequal.
+				and(eqmem(np, nq, newname(f.Sym), size))
+			}
+			i = next
+		}
+
+		if cond == nil {
+			cond = Nodbool(true)
 		}
 
 		ret := Nod(ORETURN, nil, nil)
-		ret.List = list(ret.List, and)
+		ret.List.Append(cond)
 		fn.Nbody.Append(ret)
 	}
 
@@ -511,8 +475,10 @@ func geneq(sym *Sym, t *Type) {
 	Curfn = fn
 	fn.Func.Dupok = true
 	typecheck(&fn, Etop)
-	typechecklist(fn.Nbody, Etop)
+	typechecklist(fn.Nbody.Slice(), Etop)
 	Curfn = nil
+	popdcl()
+	testdclstack()
 
 	// Disable safemode while compiling this code: the code we
 	// generate internally can refer to unsafe.Pointer.
@@ -546,8 +512,6 @@ func eqfield(p *Node, q *Node, field *Node) *Node {
 // eqmem returns the node
 // 	memequal(&p.field, &q.field [, size])
 func eqmem(p *Node, q *Node, field *Node, size int64) *Node {
-	var needsize int
-
 	nx := Nod(OADDR, Nod(OXDOT, p, field), nil)
 	nx.Etype = 1 // does not escape
 	ny := Nod(OADDR, Nod(OXDOT, q, field), nil)
@@ -555,72 +519,67 @@ func eqmem(p *Node, q *Node, field *Node, size int64) *Node {
 	typecheck(&nx, Erv)
 	typecheck(&ny, Erv)
 
-	call := Nod(OCALL, eqmemfunc(size, nx.Type.Type, &needsize), nil)
-	call.List = list(call.List, nx)
-	call.List = list(call.List, ny)
-	if needsize != 0 {
-		call.List = list(call.List, Nodintconst(size))
+	fn, needsize := eqmemfunc(size, nx.Type.Type)
+	call := Nod(OCALL, fn, nil)
+	call.List.Append(nx)
+	call.List.Append(ny)
+	if needsize {
+		call.List.Append(Nodintconst(size))
 	}
 
 	return call
 }
 
-func eqmemfunc(size int64, type_ *Type, needsize *int) *Node {
-	var fn *Node
-
+func eqmemfunc(size int64, t *Type) (fn *Node, needsize bool) {
 	switch size {
 	default:
 		fn = syslook("memequal")
-		*needsize = 1
-
+		needsize = true
 	case 1, 2, 4, 8, 16:
 		buf := fmt.Sprintf("memequal%d", int(size)*8)
 		fn = syslook(buf)
-		*needsize = 0
 	}
 
-	substArgTypes(&fn, type_, type_)
-	return fn
+	substArgTypes(&fn, t, t)
+	return fn, needsize
 }
 
 // memrun finds runs of struct fields for which memory-only algs are appropriate.
-// t is the parent struct type, and field is the field at which to start.
-// first is the first field in the memory run.
+// t is the parent struct type, and start is the field index at which to start the run.
+// The caller is responsible for providing t.FieldSlice() as fields.
 // size is the length in bytes of the memory included in the run.
-// next is the next field after the memory run.
-func memrun(t *Type, field *Type) (first *Type, size int64, next *Type) {
-	var offend int64
+// next is the index just after the end of the memory run.
+// TODO(mdempsky): Eliminate fields parameter once struct fields are kept in slices.
+func memrun(t *Type, fields []*Type, start int) (size int64, next int) {
+	next = start
 	for {
-		if field == nil || algtype1(field.Type, nil) != AMEM || isblanksym(field.Sym) {
+		next++
+		if next == len(fields) {
 			break
 		}
-		offend = field.Width + field.Type.Width
-		if first == nil {
-			first = field
-		}
-
-		// If it's a memory field but it's padded, stop here.
-		if ispaddedfield(field, t.Width) {
-			field = field.Down
+		// Stop run after a padded field.
+		if ispaddedfield(t, fields, next-1) {
 			break
 		}
-		field = field.Down
+		// Also, stop before a blank or non-memory field.
+		if isblanksym(fields[next].Sym) || algtype1(fields[next].Type, nil) != AMEM {
+			break
+		}
 	}
-	if first != nil {
-		size = offend - first.Width // first.Width is offset
-	}
-	return first, size, field
+	end := fields[next-1].Width + fields[next-1].Type.Width
+	return end - fields[start].Width, next
 }
 
-// ispaddedfield reports whether the given field
-// is followed by padding. For the case where t is
-// the last field, total gives the size of the enclosing struct.
-func ispaddedfield(t *Type, total int64) bool {
-	if t.Etype != TFIELD {
-		Fatalf("ispaddedfield called non-field %v", t)
+// ispaddedfield reports whether the i'th field of struct type t is followed
+// by padding. The caller is responsible for providing t.FieldSlice() as fields.
+// TODO(mdempsky): Eliminate fields parameter once struct fields are kept in slices.
+func ispaddedfield(t *Type, fields []*Type, i int) bool {
+	if t.Etype != TSTRUCT {
+		Fatalf("ispaddedfield called non-struct %v", t)
 	}
-	if t.Down == nil {
-		return t.Width+t.Type.Width != total
+	end := t.Width
+	if i+1 < len(fields) {
+		end = fields[i+1].Width
 	}
-	return t.Width+t.Type.Width != t.Down.Width
+	return fields[i].Width+fields[i].Type.Width != end
 }

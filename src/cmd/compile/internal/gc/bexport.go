@@ -4,7 +4,7 @@
 
 // Binary package export.
 // Based loosely on x/tools/go/importer.
-// (see fmt.go, go.y as "documentation" for how to use/setup data structures)
+// (see fmt.go, parser.go as "documentation" for how to use/setup data structures)
 //
 // Use "-newexport" flag to enable.
 
@@ -155,7 +155,6 @@ func Export(out *obj.Biobuf, trace bool) int {
 	p.pkg(localpkg)
 
 	// write compiler-specific flags
-	// go.y:import_safety
 	{
 		var flags string
 		if safemode != 0 {
@@ -221,7 +220,7 @@ func Export(out *obj.Biobuf, trace bool) int {
 				types = append(types, t)
 
 			default:
-				Fatalf("exporter: unexpected export symbol: %v %v", Oconv(int(n.Op), 0), sym)
+				Fatalf("exporter: unexpected export symbol: %v %v", Oconv(n.Op, 0), sym)
 			}
 		}
 	}
@@ -466,29 +465,28 @@ func (p *exporter) typ(t *Type) {
 		// TODO(gri) Determine if they are already sorted
 		// in which case we can drop this step.
 		var methods []*Type
-		for m := t.Method; m != nil; m = m.Down {
+		for m, it := IterMethods(t); m != nil; m = it.Next() {
 			methods = append(methods, m)
 		}
 		sort.Sort(methodbyname(methods))
 		p.int(len(methods))
 
-		if p.trace && t.Method != nil {
-			p.tracef("associated methods {>\n")
+		if p.trace && len(methods) > 0 {
+			p.tracef("associated methods {>")
 		}
 
 		for _, m := range methods {
-			p.string(m.Sym.Name)
-			p.paramList(getthisx(m.Type))
-			p.paramList(getinargx(m.Type))
-			p.paramList(getoutargx(m.Type))
-			p.inlinedBody(m.Type.Nname)
-
-			if p.trace && m.Down != nil {
+			if p.trace {
 				p.tracef("\n")
 			}
+			p.string(m.Sym.Name)
+			p.paramList(m.Type.Recvs())
+			p.paramList(m.Type.Params())
+			p.paramList(m.Type.Results())
+			p.inlinedBody(m.Type.Nname)
 		}
 
-		if p.trace && t.Method != nil {
+		if p.trace && len(methods) > 0 {
 			p.tracef("<\n} ")
 		}
 
@@ -522,8 +520,8 @@ func (p *exporter) typ(t *Type) {
 
 	case TFUNC:
 		p.tag(signatureTag)
-		p.paramList(getinargx(t))
-		p.paramList(getoutargx(t))
+		p.paramList(t.Params())
+		p.paramList(t.Results())
 
 	case TINTER:
 		p.tag(interfaceTag)
@@ -535,8 +533,8 @@ func (p *exporter) typ(t *Type) {
 
 	case TMAP:
 		p.tag(mapTag)
-		p.typ(t.Down) // key
-		p.typ(t.Type) // val
+		p.typ(t.Key()) // key
+		p.typ(t.Type)  // val
 
 	case TCHAN:
 		p.tag(chanTag)
@@ -554,17 +552,17 @@ func (p *exporter) qualifiedName(sym *Sym) {
 }
 
 func (p *exporter) fieldList(t *Type) {
-	if p.trace && t.Type != nil {
-		p.tracef("fields {>\n")
+	if p.trace && countfield(t) > 0 {
+		p.tracef("fields {>")
 		defer p.tracef("<\n} ")
 	}
 
 	p.int(countfield(t))
-	for f := t.Type; f != nil; f = f.Down {
-		p.field(f)
-		if p.trace && f.Down != nil {
+	for f, it := IterFields(t); f != nil; f = it.Next() {
+		if p.trace {
 			p.tracef("\n")
 		}
+		p.field(f)
 	}
 }
 
@@ -587,17 +585,17 @@ func (p *exporter) note(n *string) {
 }
 
 func (p *exporter) methodList(t *Type) {
-	if p.trace && t.Type != nil {
-		p.tracef("methods {>\n")
+	if p.trace && countfield(t) > 0 {
+		p.tracef("methods {>")
 		defer p.tracef("<\n} ")
 	}
 
 	p.int(countfield(t))
-	for m := t.Type; m != nil; m = m.Down {
-		p.method(m)
-		if p.trace && m.Down != nil {
+	for m, it := IterFields(t); m != nil; m = it.Next() {
+		if p.trace {
 			p.tracef("\n")
 		}
+		p.method(m)
 	}
 }
 
@@ -610,8 +608,8 @@ func (p *exporter) method(m *Type) {
 	// TODO(gri) For functions signatures, we use p.typ() to export
 	// so we could share the same type with multiple functions. Do
 	// the same here, or never try to do this for functions.
-	p.paramList(getinargx(m.Type))
-	p.paramList(getoutargx(m.Type))
+	p.paramList(m.Type.Params())
+	p.paramList(m.Type.Results())
 }
 
 // fieldName is like qualifiedName but it doesn't record the package
@@ -658,7 +656,7 @@ func (p *exporter) paramList(params *Type) {
 		n = -n
 	}
 	p.int(n)
-	for q := params.Type; q != nil; q = q.Down {
+	for q, it := IterFields(params); q != nil; q = it.Next() {
 		p.param(q, n)
 	}
 }
@@ -806,25 +804,24 @@ func (p *exporter) inlinedBody(n *Node) {
 	p.int(index)
 }
 
-func (p *exporter) nodeList(list nodesOrNodeList) {
-	it := nodeSeqIterate(list)
+func (p *exporter) nodeList(list Nodes) {
 	if p.trace {
 		p.tracef("[ ")
 	}
-	p.int(it.Len())
+	p.int(list.Len())
 	if p.trace {
-		if it.Len() <= 1 {
+		if list.Len() == 0 {
 			p.tracef("] {}")
 		} else {
 			p.tracef("] {>")
 			defer p.tracef("<\n}")
 		}
 	}
-	for ; !it.Done(); it.Next() {
+	for _, n := range list.Slice() {
 		if p.trace {
 			p.tracef("\n")
 		}
-		p.node(it.N())
+		p.node(n)
 	}
 }
 
@@ -849,7 +846,7 @@ func (p *exporter) node(n *Node) {
 
 	// expressions
 	case OMAKEMAP, OMAKECHAN, OMAKESLICE:
-		if p.bool(n.List != nil) {
+		if p.bool(n.List.Len() != 0) {
 			p.nodeList(n.List) // TODO(gri) do we still need to export this?
 		}
 		p.nodesOrNil(n.Left, n.Right)
@@ -971,7 +968,7 @@ func (p *exporter) node(n *Node) {
 		p.nodeList(n.Nbody)
 
 	case ORANGE:
-		if p.bool(n.List != nil) {
+		if p.bool(n.List.Len() != 0) {
 			p.nodeList(n.List)
 		}
 		p.node(n.Right)
@@ -983,7 +980,7 @@ func (p *exporter) node(n *Node) {
 		p.nodeList(n.List)
 
 	case OCASE, OXCASE:
-		if p.bool(n.List != nil) {
+		if p.bool(n.List.Len() != 0) {
 			p.nodeList(n.List)
 		}
 		p.nodeList(n.Nbody)
@@ -1250,13 +1247,6 @@ func untype(ctype Ctype) *Type {
 	Fatalf("exporter: unknown Ctype")
 	return nil
 }
-
-var (
-	idealint     = typ(TIDEAL)
-	idealrune    = typ(TIDEAL)
-	idealfloat   = typ(TIDEAL)
-	idealcomplex = typ(TIDEAL)
-)
 
 var predecl []*Type // initialized lazily
 

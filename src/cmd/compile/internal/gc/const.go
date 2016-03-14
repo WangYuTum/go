@@ -543,38 +543,31 @@ func evconst(n *Node) {
 
 		// merge adjacent constants in the argument list.
 	case OADDSTR:
-		var nr *Node
-		var nl *Node
-		var l2 *NodeList
-		for l1 := n.List; l1 != nil; l1 = l1.Next {
-			if Isconst(l1.N, CTSTR) && l1.Next != nil && Isconst(l1.Next.N, CTSTR) {
-				// merge from l1 up to but not including l2
+		s := n.List.Slice()
+		for i1 := 0; i1 < len(s); i1++ {
+			if Isconst(s[i1], CTSTR) && i1+1 < len(s) && Isconst(s[i1+1], CTSTR) {
+				// merge from i1 up to but not including i2
 				var strs []string
-				l2 = l1
-				for l2 != nil && Isconst(l2.N, CTSTR) {
-					nr = l2.N
-					strs = append(strs, nr.Val().U.(string))
-					l2 = l2.Next
+				i2 := i1
+				for i2 < len(s) && Isconst(s[i2], CTSTR) {
+					strs = append(strs, s[i2].Val().U.(string))
+					i2++
 				}
 
-				nl = Nod(OXXX, nil, nil)
-				*nl = *l1.N
+				nl := Nod(OXXX, nil, nil)
+				*nl = *s[i1]
 				nl.Orig = nl
 				nl.SetVal(Val{strings.Join(strs, "")})
-				l1.N = nl
-				l1.Next = l2
+				s[i1] = nl
+				s = append(s[:i1+1], s[i2:]...)
 			}
 		}
 
-		// fix list end pointer.
-		for l2 := n.List; l2 != nil; l2 = l2.Next {
-			n.List.End = l2
-		}
-
-		// collapse single-constant list to single constant.
-		if count(n.List) == 1 && Isconst(n.List.N, CTSTR) {
+		if len(s) == 1 && Isconst(s[0], CTSTR) {
 			n.Op = OLITERAL
-			n.SetVal(n.List.N.Val())
+			n.SetVal(s[0].Val())
+		} else {
+			n.List.Set(s)
 		}
 
 		return
@@ -647,7 +640,7 @@ func evconst(n *Node) {
 		switch uint32(n.Op)<<16 | uint32(v.Ctype()) {
 		default:
 			if n.Diag == 0 {
-				Yyerror("illegal constant expression %v %v", Oconv(int(n.Op), 0), nl.Type)
+				Yyerror("illegal constant expression %v %v", Oconv(n.Op, 0), nl.Type)
 				n.Diag = 1
 			}
 			return
@@ -1134,7 +1127,7 @@ setfalse:
 
 illegal:
 	if n.Diag == 0 {
-		Yyerror("illegal constant expression: %v %v %v", nl.Type, Oconv(int(n.Op), 0), nr.Type)
+		Yyerror("illegal constant expression: %v %v %v", nl.Type, Oconv(n.Op, 0), nr.Type)
 		n.Diag = 1
 	}
 }
@@ -1743,14 +1736,13 @@ func hascallchan(n *Node) bool {
 	if hascallchan(n.Left) || hascallchan(n.Right) {
 		return true
 	}
-
-	for l := n.List; l != nil; l = l.Next {
-		if hascallchan(l.N) {
+	for _, n1 := range n.List.Slice() {
+		if hascallchan(n1) {
 			return true
 		}
 	}
-	for l := n.Rlist; l != nil; l = l.Next {
-		if hascallchan(l.N) {
+	for _, n2 := range n.Rlist.Slice() {
+		if hascallchan(n2) {
 			return true
 		}
 	}

@@ -129,18 +129,6 @@ func Bgetc(b *Biobuf) int {
 	return int(c)
 }
 
-func Bgetrune(b *Biobuf) int {
-	r, _, err := b.r.ReadRune()
-	if err != nil {
-		return -1
-	}
-	return int(r)
-}
-
-func Bungetrune(b *Biobuf) {
-	b.r.UnreadRune()
-}
-
 func (b *Biobuf) Read(p []byte) (int, error) {
 	return b.r.Read(p)
 }
@@ -156,17 +144,6 @@ func Brdline(b *Biobuf, delim int) string {
 	}
 	b.linelen = len(s)
 	return string(s)
-}
-
-func Brdstr(b *Biobuf, delim int, cut int) string {
-	s, err := b.r.ReadString(byte(delim))
-	if err != nil {
-		log.Fatalf("reading input: %v", err)
-	}
-	if len(s) > 0 && cut > 0 {
-		s = s[:len(s)-1]
-	}
-	return s
 }
 
 func Blinelen(b *Biobuf) int {
@@ -299,7 +276,7 @@ func (p *Prog) String() string {
 
 	var buf bytes.Buffer
 
-	fmt.Fprintf(&buf, "%.5d (%v)\t%v%s", p.Pc, p.Line(), Aconv(int(p.As)), sc)
+	fmt.Fprintf(&buf, "%.5d (%v)\t%v%s", p.Pc, p.Line(), Aconv(p.As), sc)
 	sep := "\t"
 	if p.From.Type != TYPE_NONE {
 		fmt.Fprintf(&buf, "%s%v", sep, Dconv(p, &p.From))
@@ -311,7 +288,7 @@ func (p *Prog) String() string {
 		sep = ", "
 	}
 	if p.From3Type() != TYPE_NONE {
-		if p.From3.Type == TYPE_CONST && (p.As == ADATA || p.As == ATEXT || p.As == AGLOBL) {
+		if p.From3.Type == TYPE_CONST && (p.As == ATEXT || p.As == AGLOBL) {
 			// Special case - omit $.
 			fmt.Fprintf(&buf, "%s%d", sep, p.From3.Offset)
 		} else {
@@ -383,7 +360,7 @@ func Dconv(p *Prog, a *Addr) string {
 		}
 
 		str = Rconv(int(a.Reg))
-		if a.Name != TYPE_NONE || a.Sym != nil {
+		if a.Name != NAME_NONE || a.Sym != nil {
 			str = fmt.Sprintf("%v(%v)(REG)", Mconv(a), Rconv(int(a.Reg)))
 		}
 
@@ -406,7 +383,7 @@ func Dconv(p *Prog, a *Addr) string {
 		if a.Index != REG_NONE {
 			str += fmt.Sprintf("(%v*%d)", Rconv(int(a.Index)), int(a.Scale))
 		}
-		if p.As == ATYPE && a.Gotype != nil {
+		if p != nil && p.As == ATYPE && a.Gotype != nil {
 			str += fmt.Sprintf("%s", a.Gotype.Name)
 		}
 
@@ -595,26 +572,8 @@ func regListConv(list int) string {
 	return str
 }
 
-/*
-	Each architecture defines an instruction (A*) space as a unique
-	integer range.
-	Global opcodes like CALL start at 0; the architecture-specific ones
-	start at a distinct, big-maskable offsets.
-	Here is the list of architectures and the base of their opcode spaces.
-*/
-
-const (
-	ABase386 = (1 + iota) << 12
-	ABaseARM
-	ABaseAMD64
-	ABasePPC64
-	ABaseARM64
-	ABaseMIPS64
-	AMask = 1<<12 - 1 // AND with this to use the opcode as an array index.
-)
-
 type opSet struct {
-	lo    int
+	lo    As
 	names []string
 }
 
@@ -623,17 +582,17 @@ var aSpace []opSet
 
 // RegisterOpcode binds a list of instruction names
 // to a given instruction number range.
-func RegisterOpcode(lo int, Anames []string) {
+func RegisterOpcode(lo As, Anames []string) {
 	aSpace = append(aSpace, opSet{lo, Anames})
 }
 
-func Aconv(a int) string {
-	if 0 <= a && a < len(Anames) {
+func Aconv(a As) string {
+	if 0 <= a && int(a) < len(Anames) {
 		return Anames[a]
 	}
 	for i := range aSpace {
 		as := &aSpace[i]
-		if as.lo <= a && a < as.lo+len(as.names) {
+		if as.lo <= a && int(a-as.lo) < len(as.names) {
 			return as.names[a-as.lo]
 		}
 	}
@@ -644,7 +603,6 @@ var Anames = []string{
 	"XXX",
 	"CALL",
 	"CHECKNIL",
-	"DATA",
 	"DUFFCOPY",
 	"DUFFZERO",
 	"END",

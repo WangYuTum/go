@@ -28,10 +28,10 @@ func linkarchinit() {
 var MAXWIDTH int64 = 1 << 50
 
 var (
-	addptr int = x86.AADDQ
-	movptr int = x86.AMOVQ
-	leaptr int = x86.ALEAQ
-	cmpptr int = x86.ACMPQ
+	addptr = x86.AADDQ
+	movptr = x86.AMOVQ
+	leaptr = x86.ALEAQ
+	cmpptr = x86.ACMPQ
 )
 
 func betypeinit() {
@@ -109,6 +109,11 @@ func Main() {
 	gc.Thearch.Optoas = optoas
 	gc.Thearch.Doregbits = doregbits
 	gc.Thearch.Regnames = regnames
+
+	gc.Thearch.SSARegToReg = ssaRegToReg
+	gc.Thearch.SSAMarkMoves = ssaMarkMoves
+	gc.Thearch.SSAGenValue = ssaGenValue
+	gc.Thearch.SSAGenBlock = ssaGenBlock
 
 	gc.Main()
 	gc.Exit(0)

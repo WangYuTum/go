@@ -8,8 +8,8 @@
 package gc
 
 import (
+	"bufio"
 	"cmd/compile/internal/big"
-	"cmd/internal/obj"
 	"encoding/binary"
 	"fmt"
 )
@@ -20,7 +20,7 @@ import (
 // changes to bimport.go and bexport.go.
 
 // Import populates importpkg from the serialized package data.
-func Import(in *obj.Biobuf) {
+func Import(in *bufio.Reader) {
 	p := importer{in: in}
 	p.buf = p.bufarray[:]
 
@@ -53,7 +53,7 @@ func Import(in *obj.Biobuf) {
 	importpkg.Safe = p.string() == "safe"
 
 	// defer some type-checking until all types are read in completely
-	// (go.y:import_there)
+	// (parser.go:import_package)
 	tcok := typecheckok
 	typecheckok = true
 	defercheckwidth()
@@ -75,7 +75,7 @@ func Import(in *obj.Biobuf) {
 
 	// read funcs
 	for i := p.int(); i > 0; i-- {
-		// go.y:hidden_fndcl
+		// parser.go:hidden_fndcl
 		sym := p.localname()
 		typ := p.typ()
 		inl := p.int()
@@ -90,7 +90,7 @@ func Import(in *obj.Biobuf) {
 		declare(n, PFUNC)
 		funchdr(n)
 
-		// go.y:hidden_import
+		// parser.go:hidden_import
 		n.Func.Inl.Set(nil)
 		if inl >= 0 {
 			if inl != len(p.inlined) {
@@ -137,7 +137,7 @@ func idealType(typ *Type) *Type {
 }
 
 type importer struct {
-	in       *obj.Biobuf
+	in       *bufio.Reader
 	buf      []byte   // for reading strings
 	bufarray [64]byte // initial underlying array for buf, large enough to avoid allocation when compiling std lib
 	pkgList  []*Pkg
@@ -190,12 +190,11 @@ func (p *importer) pkg() *Pkg {
 }
 
 func (p *importer) localname() *Sym {
-	// go.y:hidden_importsym
+	// parser.go:hidden_importsym
 	name := p.string()
 	if name == "" {
 		Fatalf("importer: unexpected anonymous name")
 	}
-	structpkg = importpkg // go.y:hidden_pkg_importsym
 	return importpkg.Lookup(name)
 }
 
@@ -216,18 +215,18 @@ func (p *importer) typ() *Type {
 	var t *Type
 	switch i {
 	case namedTag:
-		// go.y:hidden_importsym
+		// parser.go:hidden_importsym
 		tsym := p.qualifiedName()
 
-		// go.y:hidden_pkgtype
+		// parser.go:hidden_pkgtype
 		t = pkgtype(tsym)
 		importsym(tsym, OTYPE)
 		p.typList = append(p.typList, t)
 
 		// read underlying type
-		// go.y:hidden_type
+		// parser.go:hidden_type
 		t0 := p.typ()
-		importtype(t, t0) // go.y:hidden_import
+		importtype(t, t0) // parser.go:hidden_import
 
 		// interfaces don't have associated methods
 		if t0.Etype == TINTER {
@@ -236,7 +235,7 @@ func (p *importer) typ() *Type {
 
 		// read associated methods
 		for i := p.int(); i > 0; i-- {
-			// go.y:hidden_fndcl
+			// parser.go:hidden_fndcl
 			name := p.string()
 			recv := p.paramList() // TODO(gri) do we need a full param list for the receiver?
 			params := p.paramList()
@@ -249,26 +248,20 @@ func (p *importer) typ() *Type {
 			}
 			sym := pkg.Lookup(name)
 
-			n := methodname1(newname(sym), recv.N.Right)
-			n.Type = functype(recv.N, params, result)
+			n := methodname1(newname(sym), recv[0].Right)
+			n.Type = functype(recv[0], params, result)
 			checkwidth(n.Type)
-			// addmethod uses the global variable structpkg to verify consistency
-			{
-				saved := structpkg
-				structpkg = tsym.Pkg
-				addmethod(sym, n.Type, false, false)
-				structpkg = saved
-			}
+			addmethod(sym, n.Type, tsym.Pkg, false, false)
 			funchdr(n)
 
-			// (comment from go.y)
+			// (comment from parser.go)
 			// inl.C's inlnode in on a dotmeth node expects to find the inlineable body as
 			// (dotmeth's type).Nname.Inl, and dotmeth's type has been pulled
 			// out by typecheck's lookdot as this $$.ttype. So by providing
 			// this back link here we avoid special casing there.
 			n.Type.Nname = n
 
-			// go.y:hidden_import
+			// parser.go:hidden_import
 			n.Func.Inl.Set(nil)
 			if inl >= 0 {
 				if inl != len(p.inlined) {
@@ -341,20 +334,20 @@ func (p *importer) qualifiedName() *Sym {
 	return pkg.Lookup(name)
 }
 
-// go.y:hidden_structdcl_list
-func (p *importer) fieldList() *NodeList {
+// parser.go:hidden_structdcl_list
+func (p *importer) fieldList() []*Node {
 	i := p.int()
 	if i == 0 {
 		return nil
 	}
-	n := list1(p.field())
-	for i--; i > 0; i-- {
-		n = list(n, p.field())
+	n := make([]*Node, i)
+	for i := range n {
+		n[i] = p.field()
 	}
 	return n
 }
 
-// go.y:hidden_structdcl
+// parser.go:hidden_structdcl
 func (p *importer) field() *Node {
 	sym := p.fieldName()
 	typ := p.typ()
@@ -388,20 +381,20 @@ func (p *importer) note() (v Val) {
 	return
 }
 
-// go.y:hidden_interfacedcl_list
-func (p *importer) methodList() *NodeList {
+// parser.go:hidden_interfacedcl_list
+func (p *importer) methodList() []*Node {
 	i := p.int()
 	if i == 0 {
 		return nil
 	}
-	n := list1(p.method())
-	for i--; i > 0; i-- {
-		n = list(n, p.method())
+	n := make([]*Node, i)
+	for i := range n {
+		n[i] = p.method()
 	}
 	return n
 }
 
-// go.y:hidden_interfacedcl
+// parser.go:hidden_interfacedcl
 func (p *importer) method() *Node {
 	sym := p.fieldName()
 	params := p.paramList()
@@ -409,13 +402,13 @@ func (p *importer) method() *Node {
 	return Nod(ODCLFIELD, newname(sym), typenod(functype(fakethis(), params, result)))
 }
 
-// go.y:sym,hidden_importsym
+// parser.go:sym,hidden_importsym
 func (p *importer) fieldName() *Sym {
 	name := p.string()
 	pkg := localpkg
 	if name == "_" {
 		// During imports, unqualified non-exported identifiers are from builtinpkg
-		// (see go.y:sym). The binary exporter only exports blank as a non-exported
+		// (see parser.go:sym). The binary exporter only exports blank as a non-exported
 		// identifier without qualification.
 		pkg = builtinpkg
 	} else if name == "?" || name != "" && !exportname(name) {
@@ -427,8 +420,8 @@ func (p *importer) fieldName() *Sym {
 	return pkg.Lookup(name)
 }
 
-// go.y:ohidden_funarg_list
-func (p *importer) paramList() *NodeList {
+// parser.go:ohidden_funarg_list
+func (p *importer) paramList() []*Node {
 	i := p.int()
 	if i == 0 {
 		return nil
@@ -440,21 +433,21 @@ func (p *importer) paramList() *NodeList {
 		named = false
 	}
 	// i > 0
-	n := list1(p.param(named))
-	i--
-	for ; i > 0; i-- {
-		n = list(n, p.param(named))
+	n := make([]*Node, i)
+	for i := range n {
+		n[i] = p.param(named)
 	}
 	return n
 }
 
-// go.y:hidden_funarg
+// parser.go:hidden_funarg
 func (p *importer) param(named bool) *Node {
 	typ := p.typ()
 
 	isddd := false
 	if typ.Etype == T_old_DARRAY {
 		// T_old_DARRAY indicates ... type
+		// TODO(mdempsky): Fix Type rekinding.
 		typ.Etype = TARRAY
 		isddd = true
 	}
@@ -468,7 +461,7 @@ func (p *importer) param(named bool) *Node {
 			Fatalf("importer: expected named parameter")
 		}
 		// The parameter package doesn't matter; it's never consulted.
-		// We use the builtinpkg per go.y:sym (line 1181).
+		// We use the builtinpkg per parser.go:sym (line 1181).
 		n.Left = newname(builtinpkg.Lookup(name))
 	}
 
@@ -549,12 +542,12 @@ func (p *importer) float(x *Mpflt) {
 // ----------------------------------------------------------------------------
 // Inlined function bodies
 
-// go.y:stmt_list
+// parser.go:stmt_list
 func (p *importer) nodeList() []*Node {
 	c := p.int()
-	s := make([]*Node, 0, c)
-	for i := 0; i < c; i++ {
-		s = append(s, p.node())
+	s := make([]*Node, c)
+	for i := range s {
+		s[i] = p.node()
 	}
 	return s
 }
@@ -590,7 +583,7 @@ func (p *importer) node() *Node {
 	// expressions
 	case OMAKEMAP, OMAKECHAN, OMAKESLICE:
 		if p.bool() {
-			setNodeSeq(&n.List, p.nodeList())
+			n.List.Set(p.nodeList())
 		}
 		n.Left, n.Right = p.nodesOrNil()
 		n.Type = p.typ()
@@ -605,19 +598,19 @@ func (p *importer) node() *Node {
 		n.Right = p.node()
 
 	case OADDSTR:
-		setNodeSeq(&n.List, p.nodeList())
+		n.List.Set(p.nodeList())
 
 	case OPTRLIT:
 		n.Left = p.node()
 
 	case OSTRUCTLIT:
 		n.Type = p.typ()
-		setNodeSeq(&n.List, p.nodeList())
+		n.List.Set(p.nodeList())
 		n.Implicit = p.bool()
 
 	case OARRAYLIT, OMAPLIT:
 		n.Type = p.typ()
-		setNodeSeq(&n.List, p.nodeList())
+		n.List.Set(p.nodeList())
 		n.Implicit = p.bool()
 
 	case OKEY:
@@ -632,13 +625,13 @@ func (p *importer) node() *Node {
 		// if p.bool() {
 		// 	n.Left = p.node()
 		// } else {
-		// 	setNodeSeq(&n.List, p.nodeList())
+		// 	n.List.Set(p.nodeList())
 		// }
 		x := Nod(OCALL, p.typ().Nod, nil)
 		if p.bool() {
-			x.List = list1(p.node())
+			x.List.Set1(p.node())
 		} else {
-			setNodeSeq(&x.List, p.nodeList())
+			x.List.Set(p.nodeList())
 		}
 		return x
 
@@ -668,12 +661,12 @@ func (p *importer) node() *Node {
 	case OREAL, OIMAG, OAPPEND, OCAP, OCLOSE, ODELETE, OLEN, OMAKE, ONEW, OPANIC,
 		ORECOVER, OPRINT, OPRINTN:
 		n.Left, _ = p.nodesOrNil()
-		setNodeSeq(&n.List, p.nodeList())
+		n.List.Set(p.nodeList())
 		n.Isddd = p.bool()
 
 	case OCALL, OCALLFUNC, OCALLMETH, OCALLINTER, OGETG:
 		n.Left = p.node()
-		setNodeSeq(&n.List, p.nodeList())
+		n.List.Set(p.nodeList())
 		n.Isddd = p.bool()
 
 	case OCMPSTR, OCMPIFACE:
@@ -699,45 +692,45 @@ func (p *importer) node() *Node {
 		n.Etype = EType(p.int())
 
 	case OAS2, OASWB:
-		setNodeSeq(&n.List, p.nodeList())
-		setNodeSeq(&n.Rlist, p.nodeList())
+		n.List.Set(p.nodeList())
+		n.Rlist.Set(p.nodeList())
 
 	case OAS2DOTTYPE, OAS2FUNC, OAS2MAPR, OAS2RECV:
-		setNodeSeq(&n.List, p.nodeList())
-		setNodeSeq(&n.Rlist, p.nodeList())
+		n.List.Set(p.nodeList())
+		n.Rlist.Set(p.nodeList())
 
 	case ORETURN:
-		setNodeSeq(&n.List, p.nodeList())
+		n.List.Set(p.nodeList())
 
 	case OPROC, ODEFER:
 		n.Left = p.node()
 
 	case OIF:
-		setNodeSeq(&n.Ninit, p.nodeList())
+		n.Ninit.Set(p.nodeList())
 		n.Left = p.node()
 		n.Nbody.Set(p.nodeList())
-		setNodeSeq(&n.Rlist, p.nodeList())
+		n.Rlist.Set(p.nodeList())
 
 	case OFOR:
-		setNodeSeq(&n.Ninit, p.nodeList())
+		n.Ninit.Set(p.nodeList())
 		n.Left, n.Right = p.nodesOrNil()
 		n.Nbody.Set(p.nodeList())
 
 	case ORANGE:
 		if p.bool() {
-			setNodeSeq(&n.List, p.nodeList())
+			n.List.Set(p.nodeList())
 		}
 		n.Right = p.node()
 		n.Nbody.Set(p.nodeList())
 
 	case OSELECT, OSWITCH:
-		setNodeSeq(&n.Ninit, p.nodeList())
+		n.Ninit.Set(p.nodeList())
 		n.Left, _ = p.nodesOrNil()
-		setNodeSeq(&n.List, p.nodeList())
+		n.List.Set(p.nodeList())
 
 	case OCASE, OXCASE:
 		if p.bool() {
-			setNodeSeq(&n.List, p.nodeList())
+			n.List.Set(p.nodeList())
 		}
 		n.Nbody.Set(p.nodeList())
 
@@ -818,7 +811,7 @@ func (p *importer) string() string {
 		} else {
 			p.buf = p.buf[:n]
 		}
-		for i := 0; i < n; i++ {
+		for i := range p.buf {
 			p.buf[i] = p.byte()
 		}
 		return string(p.buf)
@@ -855,16 +848,16 @@ func (p *importer) ReadByte() (byte, error) {
 // byte is the bottleneck interface for reading from p.in.
 // It unescapes '|' 'S' to '$' and '|' '|' to '|'.
 func (p *importer) byte() byte {
-	c := obj.Bgetc(p.in)
+	c, err := p.in.ReadByte()
 	p.read++
-	if c < 0 {
-		Fatalf("importer: read error")
+	if err != nil {
+		Fatalf("importer: read error: %v", err)
 	}
 	if c == '|' {
-		c = obj.Bgetc(p.in)
+		c, err = p.in.ReadByte()
 		p.read++
-		if c < 0 {
-			Fatalf("importer: read error")
+		if err != nil {
+			Fatalf("importer: read error: %v", err)
 		}
 		switch c {
 		case 'S':
@@ -875,5 +868,5 @@ func (p *importer) byte() byte {
 			Fatalf("importer: unexpected escape sequence in export data")
 		}
 	}
-	return byte(c)
+	return c
 }

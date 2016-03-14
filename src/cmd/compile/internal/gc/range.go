@@ -14,6 +14,7 @@ func typecheckrange(n *Node) {
 	var t2 *Type
 	var v1 *Node
 	var v2 *Node
+	var ls []*Node
 
 	// Typechecking order is important here:
 	// 0. first typecheck range expression (slice/map/chan),
@@ -31,11 +32,11 @@ func typecheckrange(n *Node) {
 	if t == nil {
 		goto out
 	}
-
 	// delicate little dance.  see typecheckas2
-	for it := nodeSeqIterate(n.List); !it.Done(); it.Next() {
-		if it.N().Name == nil || it.N().Name.Defn != n {
-			typecheck(it.P(), Erv|Easgn)
+	ls = n.List.Slice()
+	for i1, n1 := range ls {
+		if n1.Name == nil || n1.Name.Defn != n {
+			typecheck(&ls[i1], Erv|Easgn)
 		}
 	}
 
@@ -55,7 +56,7 @@ func typecheckrange(n *Node) {
 		t2 = t.Type
 
 	case TMAP:
-		t1 = t.Down
+		t1 = t.Key()
 		t2 = t.Type
 
 	case TCHAN:
@@ -66,7 +67,7 @@ func typecheckrange(n *Node) {
 
 		t1 = t.Type
 		t2 = nil
-		if nodeSeqLen(n.List) == 2 {
+		if n.List.Len() == 2 {
 			toomany = 1
 		}
 
@@ -75,17 +76,17 @@ func typecheckrange(n *Node) {
 		t2 = runetype
 	}
 
-	if nodeSeqLen(n.List) > 2 || toomany != 0 {
+	if n.List.Len() > 2 || toomany != 0 {
 		Yyerror("too many variables in range")
 	}
 
 	v1 = nil
-	if nodeSeqLen(n.List) != 0 {
-		v1 = nodeSeqFirst(n.List)
+	if n.List.Len() != 0 {
+		v1 = n.List.First()
 	}
 	v2 = nil
-	if nodeSeqLen(n.List) > 1 {
-		v2 = nodeSeqSecond(n.List)
+	if n.List.Len() > 1 {
+		v2 = n.List.Second()
 	}
 
 	// this is not only a optimization but also a requirement in the spec.
@@ -94,7 +95,7 @@ func typecheckrange(n *Node) {
 	// present."
 	if isblank(v2) {
 		if v1 != nil {
-			setNodeSeq(&n.List, []*Node{v1})
+			n.List.Set1(v1)
 		}
 		v2 = nil
 	}
@@ -120,15 +121,15 @@ func typecheckrange(n *Node) {
 	// second half of dance
 out:
 	n.Typecheck = 1
-
-	for it := nodeSeqIterate(n.List); !it.Done(); it.Next() {
-		if it.N().Typecheck == 0 {
-			typecheck(it.P(), Erv|Easgn)
+	ls = n.List.Slice()
+	for i1, n1 := range ls {
+		if n1.Typecheck == 0 {
+			typecheck(&ls[i1], Erv|Easgn)
 		}
 	}
 
 	decldepth++
-	typechecklist(n.Nbody, Etop)
+	typechecklist(n.Nbody.Slice(), Etop)
 	decldepth--
 }
 
@@ -147,20 +148,20 @@ func walkrange(n *Node) {
 	n.Right = nil
 
 	var v1 *Node
-	if nodeSeqLen(n.List) != 0 {
-		v1 = nodeSeqFirst(n.List)
+	if n.List.Len() != 0 {
+		v1 = n.List.First()
 	}
 	var v2 *Node
-	if nodeSeqLen(n.List) > 1 && !isblank(nodeSeqSecond(n.List)) {
-		v2 = nodeSeqSecond(n.List)
+	if n.List.Len() > 1 && !isblank(n.List.Second()) {
+		v2 = n.List.Second()
 	}
 
 	// n->list has no meaning anymore, clear it
 	// to avoid erroneous processing by racewalk.
-	setNodeSeq(&n.List, nil)
+	n.List.Set(nil)
 
 	var body []*Node
-	var init *NodeList
+	var init []*Node
 	switch t.Etype {
 	default:
 		Fatalf("walkrange")
@@ -178,13 +179,13 @@ func walkrange(n *Node) {
 		hn := temp(Types[TINT])
 		var hp *Node
 
-		init = list(init, Nod(OAS, hv1, nil))
-		init = list(init, Nod(OAS, hn, Nod(OLEN, ha, nil)))
+		init = append(init, Nod(OAS, hv1, nil))
+		init = append(init, Nod(OAS, hn, Nod(OLEN, ha, nil)))
 		if v2 != nil {
 			hp = temp(Ptrto(n.Type.Type))
 			tmp := Nod(OINDEX, ha, Nodintconst(0))
 			tmp.Bounded = true
-			init = list(init, Nod(OAS, hp, Nod(OADDR, tmp, nil)))
+			init = append(init, Nod(OAS, hp, Nod(OADDR, tmp, nil)))
 		}
 
 		n.Left = Nod(OLT, hv1, hn)
@@ -195,8 +196,8 @@ func walkrange(n *Node) {
 			body = []*Node{Nod(OAS, v1, hv1)}
 		} else {
 			a := Nod(OAS2, nil, nil)
-			setNodeSeq(&a.List, []*Node{v1, v2})
-			setNodeSeq(&a.Rlist, []*Node{hv1, Nod(OIND, hp, nil)})
+			a.List.Set([]*Node{v1, v2})
+			a.Rlist.Set([]*Node{hv1, Nod(OIND, hp, nil)})
 			body = []*Node{a}
 
 			// Advance pointer as part of increment.
@@ -215,7 +216,7 @@ func walkrange(n *Node) {
 			tmp.Right.Typecheck = 1
 			a = Nod(OAS, hp, tmp)
 			typecheck(&a, Etop)
-			setNodeSeq(&n.Right.Ninit, []*Node{a})
+			n.Right.Ninit.Set1(a)
 		}
 
 		// orderstmt allocated the iterator for us.
@@ -227,13 +228,13 @@ func walkrange(n *Node) {
 		hit := prealloc[n]
 		hit.Type = th
 		n.Left = nil
-		keyname := newname(th.Type.Sym)      // depends on layout of iterator struct.  See reflect.go:hiter
-		valname := newname(th.Type.Down.Sym) // ditto
+		keyname := newname(th.Field(0).Sym) // depends on layout of iterator struct.  See reflect.go:hiter
+		valname := newname(th.Field(1).Sym) // ditto
 
 		fn := syslook("mapiterinit")
 
-		substArgTypes(&fn, t.Down, t.Type, th)
-		init = list(init, mkcall1(fn, nil, nil, typename(t), ha, Nod(OADDR, hit, nil)))
+		substArgTypes(&fn, t.Key(), t.Type, th)
+		init = append(init, mkcall1(fn, nil, nil, typename(t), ha, Nod(OADDR, hit, nil)))
 		n.Left = Nod(ONE, Nod(ODOT, hit, keyname), nodnil())
 
 		fn = syslook("mapiternext")
@@ -250,8 +251,8 @@ func walkrange(n *Node) {
 			val := Nod(ODOT, hit, valname)
 			val = Nod(OIND, val, nil)
 			a := Nod(OAS2, nil, nil)
-			setNodeSeq(&a.List, []*Node{v1, v2})
-			setNodeSeq(&a.Rlist, []*Node{key, val})
+			a.List.Set([]*Node{v1, v2})
+			a.Rlist.Set([]*Node{key, val})
 			body = []*Node{a}
 		}
 
@@ -264,16 +265,16 @@ func walkrange(n *Node) {
 		hv1 := temp(t.Type)
 		hv1.Typecheck = 1
 		if haspointers(t.Type) {
-			init = list(init, Nod(OAS, hv1, nil))
+			init = append(init, Nod(OAS, hv1, nil))
 		}
 		hb := temp(Types[TBOOL])
 
 		n.Left = Nod(ONE, hb, Nodbool(false))
 		a := Nod(OAS2RECV, nil, nil)
 		a.Typecheck = 1
-		setNodeSeq(&a.List, []*Node{hv1, hb})
-		setNodeSeq(&a.Rlist, []*Node{Nod(ORECV, ha, nil)})
-		setNodeSeq(&n.Left.Ninit, []*Node{a})
+		a.List.Set([]*Node{hv1, hb})
+		a.Rlist.Set1(Nod(ORECV, ha, nil))
+		n.Left.Ninit.Set1(a)
 		if v1 == nil {
 			body = nil
 		} else {
@@ -287,7 +288,7 @@ func walkrange(n *Node) {
 		ohv1 := temp(Types[TINT])
 
 		hv1 := temp(Types[TINT])
-		init = list(init, Nod(OAS, hv1, nil))
+		init = append(init, Nod(OAS, hv1, nil))
 
 		var a *Node
 		var hv2 *Node
@@ -296,13 +297,13 @@ func walkrange(n *Node) {
 		} else {
 			hv2 = temp(runetype)
 			a = Nod(OAS2, nil, nil)
-			setNodeSeq(&a.List, []*Node{hv1, hv2})
+			a.List.Set([]*Node{hv1, hv2})
 			fn := syslook("stringiter2")
-			setNodeSeq(&a.Rlist, []*Node{mkcall1(fn, getoutargx(fn.Type), nil, ha, hv1)})
+			a.Rlist.Set1(mkcall1(fn, fn.Type.Results(), nil, ha, hv1))
 		}
 
 		n.Left = Nod(ONE, hv1, Nodintconst(0))
-		setNodeSeq(&n.Left.Ninit, []*Node{Nod(OAS, ohv1, hv1), a})
+		n.Left.Ninit.Set([]*Node{Nod(OAS, ohv1, hv1), a})
 
 		body = nil
 		if v1 != nil {
@@ -315,8 +316,8 @@ func walkrange(n *Node) {
 
 	n.Op = OFOR
 	typechecklist(init, Etop)
-	appendNodeSeq(&n.Ninit, init)
-	typechecklist(n.Left.Ninit, Etop)
+	n.Ninit.Append(init...)
+	typechecklist(n.Left.Ninit.Slice(), Etop)
 	typecheck(&n.Left, Erv)
 	typecheck(&n.Right, Etop)
 	typecheckslice(body, Etop)
@@ -344,10 +345,10 @@ func memclrrange(n, v1, v2, a *Node) bool {
 	if v1 == nil || v2 != nil {
 		return false
 	}
-	if len(n.Nbody.Slice()) == 0 || n.Nbody.Slice()[0] == nil || len(n.Nbody.Slice()) > 1 {
+	if n.Nbody.Len() == 0 || n.Nbody.First() == nil || n.Nbody.Len() > 1 {
 		return false
 	}
-	stmt := n.Nbody.Slice()[0] // only stmt in body
+	stmt := n.Nbody.First() // only stmt in body
 	if stmt.Op != OAS || stmt.Left.Op != OINDEX {
 		return false
 	}
@@ -400,7 +401,7 @@ func memclrrange(n, v1, v2, a *Node) bool {
 	n.Nbody.Append(v1)
 
 	typecheck(&n.Left, Erv)
-	typechecklist(n.Nbody, Etop)
+	typechecklist(n.Nbody.Slice(), Etop)
 	walkstmt(&n)
 	return true
 }

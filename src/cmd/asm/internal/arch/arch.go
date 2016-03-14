@@ -27,7 +27,7 @@ const (
 type Arch struct {
 	*obj.LinkArch
 	// Map of instruction names to enumeration.
-	Instructions map[string]int
+	Instructions map[string]obj.As
 	// Map of register names to enumeration.
 	Register map[string]int16
 	// Table of register prefix names. These are things like R for R(0) and SPR for SPR(268).
@@ -42,14 +42,6 @@ type Arch struct {
 // that do not accept the R(N) notation. It always returns failure.
 func nilRegisterNumber(name string, n int16) (int16, bool) {
 	return 0, false
-}
-
-var Pseudos = map[string]int{
-	"DATA":     obj.ADATA,
-	"FUNCDATA": obj.AFUNCDATA,
-	"GLOBL":    obj.AGLOBL,
-	"PCDATA":   obj.APCDATA,
-	"TEXT":     obj.ATEXT,
 }
 
 // Set configures the architecture specified by GOARCH and returns its representation.
@@ -102,13 +94,13 @@ func archX86(linkArch *obj.LinkArch) *Arch {
 	register["PC"] = RPC
 	// Register prefix not used on this architecture.
 
-	instructions := make(map[string]int)
+	instructions := make(map[string]obj.As)
 	for i, s := range obj.Anames {
-		instructions[s] = i
+		instructions[s] = obj.As(i)
 	}
 	for i, s := range x86.Anames {
-		if i >= obj.A_ARCHSPECIFIC {
-			instructions[s] = i + obj.ABaseAMD64
+		if obj.As(i) >= obj.A_ARCHSPECIFIC {
+			instructions[s] = obj.As(i) + obj.ABaseAMD64
 		}
 	}
 	// Annoying aliases.
@@ -200,13 +192,13 @@ func archArm() *Arch {
 		"R": true,
 	}
 
-	instructions := make(map[string]int)
+	instructions := make(map[string]obj.As)
 	for i, s := range obj.Anames {
-		instructions[s] = i
+		instructions[s] = obj.As(i)
 	}
 	for i, s := range arm.Anames {
-		if i >= obj.A_ARCHSPECIFIC {
-			instructions[s] = i + obj.ABaseARM
+		if obj.As(i) >= obj.A_ARCHSPECIFIC {
+			instructions[s] = obj.As(i) + obj.ABaseARM
 		}
 	}
 	// Annoying aliases.
@@ -288,13 +280,13 @@ func archArm64() *Arch {
 		"V": true,
 	}
 
-	instructions := make(map[string]int)
+	instructions := make(map[string]obj.As)
 	for i, s := range obj.Anames {
-		instructions[s] = i
+		instructions[s] = obj.As(i)
 	}
 	for i, s := range arm64.Anames {
-		if i >= obj.A_ARCHSPECIFIC {
-			instructions[s] = i + obj.ABaseARM64
+		if obj.As(i) >= obj.A_ARCHSPECIFIC {
+			instructions[s] = obj.As(i) + obj.ABaseARM64
 		}
 	}
 	// Annoying aliases.
@@ -348,13 +340,13 @@ func archPPC64() *Arch {
 		"SPR": true,
 	}
 
-	instructions := make(map[string]int)
+	instructions := make(map[string]obj.As)
 	for i, s := range obj.Anames {
-		instructions[s] = i
+		instructions[s] = obj.As(i)
 	}
 	for i, s := range ppc64.Anames {
-		if i >= obj.A_ARCHSPECIFIC {
-			instructions[s] = i + obj.ABasePPC64
+		if obj.As(i) >= obj.A_ARCHSPECIFIC {
+			instructions[s] = obj.As(i) + obj.ABasePPC64
 		}
 	}
 	// Annoying aliases.
@@ -403,13 +395,13 @@ func archMips64() *Arch {
 		"R":   true,
 	}
 
-	instructions := make(map[string]int)
+	instructions := make(map[string]obj.As)
 	for i, s := range obj.Anames {
-		instructions[s] = i
+		instructions[s] = obj.As(i)
 	}
 	for i, s := range mips.Anames {
-		if i >= obj.A_ARCHSPECIFIC {
-			instructions[s] = i + obj.ABaseMIPS64
+		if obj.As(i) >= obj.A_ARCHSPECIFIC {
+			instructions[s] = obj.As(i) + obj.ABaseMIPS64
 		}
 	}
 	// Annoying alias.
